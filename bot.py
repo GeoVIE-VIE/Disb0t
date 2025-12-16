@@ -307,7 +307,7 @@ YLYL_BOARDS = ['b', 'wsg', 'gif']
 
 async def find_ylyl_threads(board: str) -> list:
     """Find YLYL threads on a given board"""
-    url = f"https://a.4chan.org/{board}/catalog.json"
+    url = f"https://boards.4chan.org/{board}/catalog.json"
     threads = []
 
     headers = {
@@ -342,7 +342,7 @@ async def find_ylyl_threads(board: str) -> list:
 
 async def get_thread_media(board: str, thread_no: int) -> list:
     """Get all images/webms from a thread"""
-    url = f"https://a.4chan.org/{board}/thread/{thread_no}.json"
+    url = f"https://boards.4chan.org/{board}/thread/{thread_no}.json"
     media = []
 
     headers = {
@@ -362,7 +362,7 @@ async def get_thread_media(board: str, thread_no: int) -> list:
                         # Only get images and webms
                         if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webm']:
                             media.append({
-                                'url': f"https://i.4chan.org/{board}/{post['tim']}{ext}",
+                                'url': f"https://i.4cdn.net/{board}/{post['tim']}{ext}",
                                 'filename': f"{post.get('filename', 'image')}{ext}",
                                 'ext': ext
                             })
