@@ -1,15 +1,14 @@
-# Disb0t - Discord YouTube Music Bot
+# Disb0t - Discord Bot
 
-A Discord bot that plays YouTube videos in voice channels.
+A Discord bot that plays YouTube videos in voice channels and pulls memes from 4chan.
 
 ## Features
 
 - Play YouTube videos by URL or search query
 - Queue system for multiple songs
 - Pause, resume, skip, and stop controls
-- Volume control
-- Loop mode
-- Now playing and queue display
+- Volume control and loop mode
+- Pull random images/webms from 4chan YLYL threads
 
 ## Prerequisites
 
@@ -61,6 +60,8 @@ A Discord bot that plays YouTube videos in voice channels.
 | `!volume <0-100>` | `!vol` | Set volume |
 | `!clear` | - | Clear the queue |
 | `!leave` | `!disconnect`, `!dc` | Leave voice channel |
+| `!ylyl [count]` | - | Get random YLYL images (max 5) |
+| `!ylyl_boards` | - | Show which boards are searched |
 
 ## Getting a Discord Bot Token
 

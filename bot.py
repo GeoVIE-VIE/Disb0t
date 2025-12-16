@@ -3,6 +3,9 @@ from discord.ext import commands
 from discord import app_commands
 import yt_dlp
 import asyncio
+import aiohttp
+import random
+import re
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -295,6 +298,124 @@ async def clear(ctx):
     player = get_player(ctx.guild.id)
     player.clear_queue()
     await ctx.send("Queue cleared!")
+
+
+# ============== 4chan YLYL Feature ==============
+
+# Boards to search for YLYL threads (wsg is worksafe, gif is not)
+YLYL_BOARDS = ['wsg', 'gif']
+
+async def find_ylyl_threads(board: str) -> list:
+    """Find YLYL threads on a given board"""
+    url = f"https://a.4chan.org/{board}/catalog.json"
+    threads = []
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return []
+                data = await response.json()
+
+                for page in data:
+                    for thread in page.get('threads', []):
+                        subject = thread.get('sub', '').lower()
+                        comment = thread.get('com', '').lower()
+
+                        # Look for YLYL patterns
+                        if any(pattern in subject or pattern in comment for pattern in
+                               ['ylyl', 'you laugh you lose', 'you lose you laugh', 'you laugh, you lose']):
+                            threads.append({
+                                'no': thread['no'],
+                                'board': board,
+                                'subject': thread.get('sub', 'YLYL Thread')
+                            })
+        except Exception as e:
+            print(f"Error fetching catalog for /{board}/: {e}")
+
+    return threads
+
+
+async def get_thread_media(board: str, thread_no: int) -> list:
+    """Get all images/webms from a thread"""
+    url = f"https://a.4chan.org/{board}/thread/{thread_no}.json"
+    media = []
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return []
+                data = await response.json()
+
+                for post in data.get('posts', []):
+                    if 'tim' in post and 'ext' in post:
+                        ext = post['ext']
+                        # Only get images and webms
+                        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webm']:
+                            media.append({
+                                'url': f"https://i.4chan.org/{board}/{post['tim']}{ext}",
+                                'filename': f"{post.get('filename', 'image')}{ext}",
+                                'ext': ext
+                            })
+        except Exception as e:
+            print(f"Error fetching thread {thread_no}: {e}")
+
+    return media
+
+
+@bot.command(name='ylyl')
+async def ylyl(ctx, count: int = 1):
+    """Get random images/webms from 4chan YLYL threads. Usage: !ylyl [count]"""
+    if count > 5:
+        count = 5
+        await ctx.send("Max 5 images at a time!")
+
+    if count < 1:
+        count = 1
+
+    async with ctx.typing():
+        # Find YLYL threads across boards
+        all_threads = []
+        for board in YLYL_BOARDS:
+            threads = await find_ylyl_threads(board)
+            all_threads.extend(threads)
+
+        if not all_threads:
+            return await ctx.send("No YLYL threads found!")
+
+        # Get media from random threads
+        all_media = []
+        random.shuffle(all_threads)
+
+        for thread in all_threads[:3]:  # Check up to 3 threads
+            media = await get_thread_media(thread['board'], thread['no'])
+            all_media.extend(media)
+            if len(all_media) >= 50:  # Enough to pick from
+                break
+
+        if not all_media:
+            return await ctx.send("No media found in YLYL threads!")
+
+        # Pick random media
+        selected = random.sample(all_media, min(count, len(all_media)))
+
+        for item in selected:
+            if item['ext'] == '.webm':
+                # Discord can't embed webm, send as link
+                await ctx.send(f"**{item['filename']}**\n{item['url']}")
+            else:
+                # Send image as embed
+                embed = discord.Embed(color=discord.Color.green())
+                embed.set_image(url=item['url'])
+                await ctx.send(embed=embed)
+
+
+@bot.command(name='ylyl_boards')
+async def ylyl_boards(ctx):
+    """Show which boards are being searched for YLYL"""
+    boards = ", ".join([f"/{b}/" for b in YLYL_BOARDS])
+    await ctx.send(f"Searching for YLYL on: {boards}")
 
 
 # Run the bot
