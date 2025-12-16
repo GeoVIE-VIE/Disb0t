@@ -302,8 +302,8 @@ async def clear(ctx):
 
 # ============== 4chan YLYL Feature ==============
 
-# Boards to search for YLYL threads (wsg is worksafe, gif is not)
-YLYL_BOARDS = ['wsg', 'gif']
+# Boards to search for YLYL threads
+YLYL_BOARDS = ['b', 'wsg', 'gif']
 
 async def find_ylyl_threads(board: str) -> list:
     """Find YLYL threads on a given board"""
