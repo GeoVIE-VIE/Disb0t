@@ -4,10 +4,13 @@ from discord import app_commands
 import yt_dlp
 import asyncio
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from collections import deque
 
-load_dotenv()
+# Load .env from the same directory as this script
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
 
 intents = discord.Intents.default()
 intents.message_content = True
