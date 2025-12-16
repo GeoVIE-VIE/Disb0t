@@ -360,9 +360,9 @@ async def get_thread_media(board: str, thread_no: int) -> list:
                     if 'tim' in post and 'ext' in post:
                         ext = post['ext']
                         # Only get images and webms
-                        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webm']:
+                        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webm', '.mp4']:
                             media.append({
-                                'url': f"https://i.4cdn.net/{board}/{post['tim']}{ext}",
+                                'url': f"https://i.4cdn.org/{board}/{post['tim']}{ext}",
                                 'filename': f"{post.get('filename', 'image')}{ext}",
                                 'ext': ext
                             })
@@ -409,8 +409,8 @@ async def ylyl(ctx, count: int = 1):
         selected = random.sample(all_media, min(count, len(all_media)))
 
         for item in selected:
-            if item['ext'] == '.webm':
-                # Discord can't embed webm, send as link
+            if item['ext'] in ['.webm', '.mp4']:
+                # Discord can't embed webm/mp4, send as link
                 await ctx.send(f"**{item['filename']}**\n{item['url']}")
             else:
                 # Send image as embed
