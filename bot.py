@@ -310,9 +310,13 @@ async def find_ylyl_threads(board: str) -> list:
     url = f"https://a.4chan.org/{board}/catalog.json"
     threads = []
 
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(url) as response:
+            async with session.get(url, headers=headers) as response:
                 if response.status != 200:
                     return []
                 data = await response.json()
@@ -341,9 +345,13 @@ async def get_thread_media(board: str, thread_no: int) -> list:
     url = f"https://a.4chan.org/{board}/thread/{thread_no}.json"
     media = []
 
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(url) as response:
+            async with session.get(url, headers=headers) as response:
                 if response.status != 200:
                     return []
                 data = await response.json()
