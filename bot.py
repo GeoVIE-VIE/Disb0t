@@ -454,16 +454,23 @@ async def pubg_api_request(endpoint: str, shard: str = 'steam') -> dict:
                 return {'error': f'API error: {response.status}'}
 
 
-async def get_pubg_player_id(username: str, platform: str) -> str:
-    """Get player ID from username"""
+async def get_pubg_player_id(username: str, platform: str) -> tuple:
+    """Get player ID from username or Steam ID. Returns (player_id, display_name)"""
+    # First try by player name
     data = await pubg_api_request(f"players?filter[playerNames]={username}", platform)
 
-    if 'error' in data:
-        return None
-
     if 'data' in data and len(data['data']) > 0:
-        return data['data'][0]['id']
-    return None
+        player = data['data'][0]
+        return (player['id'], player.get('attributes', {}).get('name', username))
+
+    # If that fails and it looks like a Steam ID (all numbers, 17 digits), try that
+    if platform == 'steam' and username.isdigit() and len(username) == 17:
+        data = await pubg_api_request(f"players?filter[steamIds]={username}", platform)
+        if 'data' in data and len(data['data']) > 0:
+            player = data['data'][0]
+            return (player['id'], player.get('attributes', {}).get('name', username))
+
+    return (None, None)
 
 
 async def get_pubg_season_stats(player_id: str, platform: str) -> dict:
@@ -612,16 +619,16 @@ async def pubg(ctx, username: str = None, platform: str = 'steam'):
 
     async with ctx.typing():
         # Get player ID
-        player_id = await get_pubg_player_id(username, platform)
+        player_id, display_name = await get_pubg_player_id(username, platform)
 
         if not player_id:
-            return await ctx.send(f"Player **{username}** not found on **{platform}**!")
+            return await ctx.send(f"Player **{username}** not found on **{platform}**!\nTry your exact in-game name (case-sensitive) or Steam64 ID.")
 
         # Get season stats
         stats_data = await get_pubg_season_stats(player_id, platform)
 
         # Format and send
-        embed = format_pubg_stats(stats_data, username, platform)
+        embed = format_pubg_stats(stats_data, display_name, platform)
         await ctx.send(embed=embed)
 
 
