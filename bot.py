@@ -7,6 +7,7 @@ import aiohttp
 import random
 import re
 import os
+import urllib.parse
 from pathlib import Path
 from dotenv import load_dotenv
 from collections import deque
@@ -455,22 +456,27 @@ async def pubg_api_request(endpoint: str, shard: str = 'steam') -> dict:
 
 
 async def get_pubg_player_id(username: str, platform: str) -> tuple:
-    """Get player ID from username or Steam ID. Returns (player_id, display_name)"""
+    """Get player ID from username or Steam ID. Returns (player_id, display_name, error_msg)"""
+    # URL encode the username
+    encoded_name = urllib.parse.quote(username)
+
     # First try by player name
-    data = await pubg_api_request(f"players?filter[playerNames]={username}", platform)
+    data = await pubg_api_request(f"players?filter[playerNames]={encoded_name}", platform)
 
     if 'data' in data and len(data['data']) > 0:
         player = data['data'][0]
-        return (player['id'], player.get('attributes', {}).get('name', username))
+        return (player['id'], player.get('attributes', {}).get('name', username), None)
 
     # If that fails and it looks like a Steam ID (all numbers, 17 digits), try that
     if platform == 'steam' and username.isdigit() and len(username) == 17:
         data = await pubg_api_request(f"players?filter[steamIds]={username}", platform)
         if 'data' in data and len(data['data']) > 0:
             player = data['data'][0]
-            return (player['id'], player.get('attributes', {}).get('name', username))
+            return (player['id'], player.get('attributes', {}).get('name', username), None)
 
-    return (None, None)
+    # Return error info for debugging
+    error_msg = data.get('error', 'Unknown error')
+    return (None, None, error_msg)
 
 
 async def get_pubg_season_stats(player_id: str, platform: str) -> dict:
@@ -619,10 +625,14 @@ async def pubg(ctx, username: str = None, platform: str = 'steam'):
 
     async with ctx.typing():
         # Get player ID
-        player_id, display_name = await get_pubg_player_id(username, platform)
+        player_id, display_name, error_msg = await get_pubg_player_id(username, platform)
 
         if not player_id:
-            return await ctx.send(f"Player **{username}** not found on **{platform}**!\nTry your exact in-game name (case-sensitive) or Steam64 ID.")
+            msg = f"Player **{username}** not found on **{platform}**!"
+            if error_msg:
+                msg += f"\nAPI said: {error_msg}"
+            msg += "\n\nTips:\n• Use exact in-game name (case-sensitive)\n• Or use Steam64 ID (17 digits)\n• Player must have played in last 14 days"
+            return await ctx.send(msg)
 
         # Get season stats
         stats_data = await get_pubg_season_stats(player_id, platform)
