@@ -547,6 +547,48 @@ def format_pubg_stats(stats_data: dict, username: str, platform: str) -> discord
         embed.add_field(name="⏱️ Avg Survival", value=f"{avg_survival:.1f} min", inline=True)
         embed.add_field(name="🎲 Modes", value=str(len(modes_played)), inline=True)
 
+        # Rate the player
+        win_rate = (total_stats['wins'] / max(total_stats['matches'], 1)) * 100
+
+        # Scoring system
+        score = 0
+        if kd >= 2.0:
+            score += 3
+        elif kd >= 1.0:
+            score += 2
+        elif kd >= 0.5:
+            score += 1
+
+        if avg_damage >= 300:
+            score += 3
+        elif avg_damage >= 150:
+            score += 2
+        elif avg_damage >= 100:
+            score += 1
+
+        if win_rate >= 10:
+            score += 3
+        elif win_rate >= 5:
+            score += 2
+        elif win_rate >= 2:
+            score += 1
+
+        # Verdict
+        if score >= 7:
+            verdict = "🔥 **CERTIFIED GAMER** 🔥"
+            embed.color = discord.Color.gold()
+        elif score >= 5:
+            verdict = "✅ **NOT A SHITTER**"
+            embed.color = discord.Color.green()
+        elif score >= 3:
+            verdict = "😐 **MID**"
+            embed.color = discord.Color.orange()
+        else:
+            verdict = "💩 **SHITTER**"
+            embed.color = discord.Color.red()
+
+        embed.add_field(name="📋 VERDICT", value=verdict, inline=False)
+
     except Exception as e:
         embed.description = f"Error parsing stats: {e}"
 
