@@ -426,6 +426,163 @@ async def ylyl_boards(ctx):
     await ctx.send(f"Searching for YLYL on: {boards}")
 
 
+# ============== PUBG Stats Feature ==============
+
+PUBG_API_KEY = os.getenv('PUBG_API_KEY')
+PUBG_PLATFORMS = ['steam', 'psn', 'xbox', 'stadia']
+
+
+async def pubg_api_request(endpoint: str, shard: str = 'steam') -> dict:
+    """Make a request to the PUBG API"""
+    url = f"https://api.pubg.com/shards/{shard}/{endpoint}"
+    headers = {
+        'Authorization': f'Bearer {PUBG_API_KEY}',
+        'Accept': 'application/vnd.api+json'
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 200:
+                return await response.json()
+            elif response.status == 404:
+                return {'error': 'Player not found'}
+            elif response.status == 401:
+                return {'error': 'Invalid API key'}
+            elif response.status == 429:
+                return {'error': 'Rate limited - try again later'}
+            else:
+                return {'error': f'API error: {response.status}'}
+
+
+async def get_pubg_player_id(username: str, platform: str) -> str:
+    """Get player ID from username"""
+    data = await pubg_api_request(f"players?filter[playerNames]={username}", platform)
+
+    if 'error' in data:
+        return None
+
+    if 'data' in data and len(data['data']) > 0:
+        return data['data'][0]['id']
+    return None
+
+
+async def get_pubg_season_stats(player_id: str, platform: str) -> dict:
+    """Get current season stats for a player"""
+    # First get the current season
+    seasons_data = await pubg_api_request("seasons", platform)
+
+    if 'error' in seasons_data:
+        return seasons_data
+
+    # Find current season
+    current_season = None
+    for season in seasons_data.get('data', []):
+        if season.get('attributes', {}).get('isCurrentSeason'):
+            current_season = season['id']
+            break
+
+    if not current_season:
+        return {'error': 'Could not find current season'}
+
+    # Get player stats for this season
+    stats_data = await pubg_api_request(f"players/{player_id}/seasons/{current_season}", platform)
+    return stats_data
+
+
+def format_pubg_stats(stats_data: dict, username: str, platform: str) -> discord.Embed:
+    """Format PUBG stats into a Discord embed"""
+    embed = discord.Embed(
+        title=f"PUBG Stats: {username}",
+        color=discord.Color.orange()
+    )
+    embed.set_footer(text=f"Platform: {platform.upper()}")
+
+    if 'error' in stats_data:
+        embed.description = f"Error: {stats_data['error']}"
+        return embed
+
+    try:
+        attributes = stats_data.get('data', {}).get('attributes', {})
+        game_modes = attributes.get('gameModeStats', {})
+
+        # Combine stats from different modes
+        total_stats = {
+            'wins': 0, 'top10s': 0, 'kills': 0, 'deaths': 0,
+            'headshots': 0, 'damage': 0, 'matches': 0, 'time': 0
+        }
+
+        modes_played = []
+        for mode, stats in game_modes.items():
+            if stats.get('roundsPlayed', 0) > 0:
+                modes_played.append(mode)
+                total_stats['wins'] += stats.get('wins', 0)
+                total_stats['top10s'] += stats.get('top10s', 0)
+                total_stats['kills'] += stats.get('kills', 0)
+                total_stats['deaths'] += stats.get('losses', 0)
+                total_stats['headshots'] += stats.get('headshotKills', 0)
+                total_stats['damage'] += stats.get('damageDealt', 0)
+                total_stats['matches'] += stats.get('roundsPlayed', 0)
+                total_stats['time'] += stats.get('timeSurvived', 0)
+
+        if total_stats['matches'] == 0:
+            embed.description = "No matches played this season!"
+            return embed
+
+        # Calculate ratios
+        kd = total_stats['kills'] / max(total_stats['deaths'], 1)
+        hs_percent = (total_stats['headshots'] / max(total_stats['kills'], 1)) * 100
+        avg_damage = total_stats['damage'] / max(total_stats['matches'], 1)
+        avg_survival = total_stats['time'] / max(total_stats['matches'], 1) / 60  # minutes
+
+        # Add fields
+        embed.add_field(name="🏆 Wins", value=str(total_stats['wins']), inline=True)
+        embed.add_field(name="🔟 Top 10s", value=str(total_stats['top10s']), inline=True)
+        embed.add_field(name="🎮 Matches", value=str(total_stats['matches']), inline=True)
+
+        embed.add_field(name="💀 Kills", value=str(total_stats['kills']), inline=True)
+        embed.add_field(name="📊 K/D", value=f"{kd:.2f}", inline=True)
+        embed.add_field(name="🎯 Headshot %", value=f"{hs_percent:.1f}%", inline=True)
+
+        embed.add_field(name="💥 Avg Damage", value=f"{avg_damage:.0f}", inline=True)
+        embed.add_field(name="⏱️ Avg Survival", value=f"{avg_survival:.1f} min", inline=True)
+        embed.add_field(name="🎲 Modes", value=str(len(modes_played)), inline=True)
+
+    except Exception as e:
+        embed.description = f"Error parsing stats: {e}"
+
+    return embed
+
+
+@bot.command(name='pubg')
+async def pubg(ctx, username: str = None, platform: str = 'steam'):
+    """Get PUBG player stats. Usage: !pubg <username> [platform]
+    Platforms: steam, psn, xbox, stadia"""
+
+    if not PUBG_API_KEY:
+        return await ctx.send("PUBG API key not configured!")
+
+    if not username:
+        return await ctx.send("Usage: `!pubg <username> [platform]`\nPlatforms: steam, psn, xbox, stadia")
+
+    platform = platform.lower()
+    if platform not in PUBG_PLATFORMS:
+        return await ctx.send(f"Invalid platform! Use: {', '.join(PUBG_PLATFORMS)}")
+
+    async with ctx.typing():
+        # Get player ID
+        player_id = await get_pubg_player_id(username, platform)
+
+        if not player_id:
+            return await ctx.send(f"Player **{username}** not found on **{platform}**!")
+
+        # Get season stats
+        stats_data = await get_pubg_season_stats(player_id, platform)
+
+        # Format and send
+        embed = format_pubg_stats(stats_data, username, platform)
+        await ctx.send(embed=embed)
+
+
 # Run the bot
 if __name__ == "__main__":
     token = os.getenv('DISCORD_TOKEN')
