@@ -628,11 +628,7 @@ async def pubg(ctx, username: str = None, platform: str = 'steam'):
         player_id, display_name, error_msg = await get_pubg_player_id(username, platform)
 
         if not player_id:
-            msg = f"Player **{username}** not found on **{platform}**!"
-            if error_msg:
-                msg += f"\nAPI said: {error_msg}"
-            msg += "\n\nTips:\n• Use exact in-game name (case-sensitive)\n• Or use Steam64 ID (17 digits)\n• Player must have played in last 14 days"
-            return await ctx.send(msg)
+            return await ctx.send(f"Player **{username}** not found on **{platform}**!\nPlayer must have played in the last 14 days.")
 
         # Get season stats
         stats_data = await get_pubg_season_stats(player_id, platform)
