@@ -563,27 +563,27 @@ def format_pubg_stats(stats_data: dict, username: str, platform: str) -> discord
         # Rate the player
         win_rate = (total_stats['wins'] / max(total_stats['matches'], 1)) * 100
 
-        # Scoring system
+        # Scoring system (harsher thresholds)
         score = 0
-        if kd >= 2.0:
+        if kd >= 3.0:
             score += 3
-        elif kd >= 1.0:
+        elif kd >= 2.0:
             score += 2
-        elif kd >= 0.5:
+        elif kd >= 1.5:
             score += 1
 
-        if avg_damage >= 300:
+        if avg_damage >= 400:
             score += 3
+        elif avg_damage >= 250:
+            score += 2
         elif avg_damage >= 150:
-            score += 2
-        elif avg_damage >= 100:
             score += 1
 
-        if win_rate >= 10:
+        if win_rate >= 15:
             score += 3
-        elif win_rate >= 5:
+        elif win_rate >= 8:
             score += 2
-        elif win_rate >= 2:
+        elif win_rate >= 4:
             score += 1
 
         # Verdict
@@ -636,6 +636,70 @@ async def pubg(ctx, username: str = None, platform: str = 'steam'):
         # Format and send
         embed = format_pubg_stats(stats_data, display_name, platform)
         await ctx.send(embed=embed)
+
+
+# ============== Dictionary Feature ==============
+
+@bot.command(name='define', aliases=['dict', 'd'])
+async def define(ctx, *, word: str = None):
+    """Look up the definition of a word. Usage: !define <word>"""
+    if not word:
+        return await ctx.send("Usage: `!define <word>`")
+
+    word = word.strip().lower()
+
+    async with ctx.typing():
+        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{urllib.parse.quote(word)}"
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url) as response:
+                    if response.status == 404:
+                        return await ctx.send(f"No definition found for **{word}**")
+
+                    if response.status != 200:
+                        return await ctx.send(f"Error looking up word: {response.status}")
+
+                    data = await response.json()
+
+                    if not data or len(data) == 0:
+                        return await ctx.send(f"No definition found for **{word}**")
+
+                    entry = data[0]
+                    embed = discord.Embed(
+                        title=f"📖 {entry.get('word', word)}",
+                        color=discord.Color.blue()
+                    )
+
+                    # Add phonetic if available
+                    phonetic = entry.get('phonetic', '')
+                    if phonetic:
+                        embed.description = f"*{phonetic}*"
+
+                    # Add meanings (limit to first 3)
+                    meanings = entry.get('meanings', [])[:3]
+                    for meaning in meanings:
+                        part_of_speech = meaning.get('partOfSpeech', 'unknown')
+                        definitions = meaning.get('definitions', [])[:2]
+
+                        def_text = ""
+                        for i, d in enumerate(definitions, 1):
+                            def_text += f"{i}. {d.get('definition', 'N/A')}\n"
+                            example = d.get('example')
+                            if example:
+                                def_text += f"   *\"{example}\"*\n"
+
+                        if def_text:
+                            embed.add_field(
+                                name=f"**{part_of_speech}**",
+                                value=def_text[:1024],
+                                inline=False
+                            )
+
+                    await ctx.send(embed=embed)
+
+            except Exception as e:
+                await ctx.send(f"Error: {e}")
 
 
 # Run the bot
