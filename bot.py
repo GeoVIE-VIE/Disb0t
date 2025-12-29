@@ -840,7 +840,16 @@ def format_phone_number(phone: str) -> str:
 
 def fetch_phone_data(url: str) -> tuple:
     """Fetch phone data using cloudscraper (runs in executor)"""
-    scraper = cloudscraper.create_scraper()
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+    # First visit the homepage to get cookies
+    scraper.get("https://www.usphonebook.com/")
+    # Then fetch the actual page
     response = scraper.get(url)
     return response.status_code, response.text
 
