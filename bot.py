@@ -877,8 +877,14 @@ async def phone_lookup(ctx, *, phone: str = None):
             if status_code != 200:
                 return await ctx.send(f"Error fetching data: {status_code}")
 
-            # Find gResults in the page
-            match = re.search(r"gResults:'(\[.*?\])'", text)
+            # Find gResults in the page - try multiple patterns
+            match = re.search(r"gResults:'(\[.+?\])'", text, re.DOTALL)
+            if not match:
+                # Try alternate pattern with double quotes
+                match = re.search(r'gResults:"(\[.+?\])"', text, re.DOTALL)
+            if not match:
+                # Try without quotes
+                match = re.search(r'gResults:\s*(\[.+?\])', text, re.DOTALL)
             if not match:
                 return await ctx.send(f"No results found for **{formatted}**")
 
