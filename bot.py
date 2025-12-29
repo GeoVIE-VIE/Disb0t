@@ -1087,8 +1087,9 @@ def fetch_phone_data(url: str) -> dict:
                 page.screenshot(path='/tmp/phone_debug.png')
                 with open('/tmp/phone_debug.html', 'w') as f:
                     f.write(content)
+                title = page.title()
                 browser.close()
-                return {'captcha_detected': True, 'page_title': page.title()}
+                return {'captcha_detected': True, 'page_title': title}
 
             # === PHASE 2: Natural mouse movements on homepage ===
             print("Phase 2: Simulating human browsing...")
@@ -1187,6 +1188,9 @@ def fetch_phone_data(url: str) -> dict:
                 browser.close()
                 return result
 
+            # Get page title before any potential issues
+            page_title = page.title()
+
             # Look for gResults - try multiple patterns
             patterns = [
                 r"gResults:'(\[[\s\S]+?\])'",
@@ -1215,7 +1219,7 @@ def fetch_phone_data(url: str) -> dict:
                     if name_match:
                         result['name'] = name_match.group(1).strip()
 
-            result['page_title'] = page.title()
+            result['page_title'] = page_title
             browser.close()
             return result
 
