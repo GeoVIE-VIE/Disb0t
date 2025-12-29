@@ -716,7 +716,7 @@ async def define(ctx, *, word: str = None):
 ALPHAVANTAGE_API_KEY = os.getenv('ALPHAVANTAGE_API_KEY')
 
 
-@bot.command(name='stock', aliases=['s', 'stonk'])
+@bot.command(name='stock', aliases=['stonk', 'st'])
 async def stock(ctx, symbol: str = None):
     """Get stock quote. Usage: !s <symbol>"""
     if not ALPHAVANTAGE_API_KEY:
