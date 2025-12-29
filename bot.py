@@ -825,26 +825,39 @@ import json
 import time
 from curl_cffi import requests as curl_requests
 
-# Cookie file path for datadome persistence
-COOKIE_FILE = Path(__file__).parent / '.datadome_cookie'
+# Cookie file path for persistence (now stores ALL cookies as JSON)
+COOKIE_FILE = Path(__file__).parent / '.phone_cookies.json'
 
 
-def load_datadome_cookie() -> str:
-    """Load saved datadome cookie from file"""
+def load_cookies() -> dict:
+    """Load saved cookies from file (JSON format)"""
     if COOKIE_FILE.exists():
         try:
-            return COOKIE_FILE.read_text().strip()
+            return json.loads(COOKIE_FILE.read_text())
         except:
             pass
-    return None
+    return {}
 
 
-def save_datadome_cookie(cookie_value: str):
-    """Save datadome cookie to file"""
+def save_cookies(cookies: dict):
+    """Save cookies to file as JSON"""
     try:
-        COOKIE_FILE.write_text(cookie_value)
+        COOKIE_FILE.write_text(json.dumps(cookies, indent=2))
     except:
         pass
+
+
+def parse_cookie_string(cookie_str: str) -> dict:
+    """Parse cookie string from browser (name=value; name2=value2 format)"""
+    cookies = {}
+    # Handle both semicolon-separated and newline-separated formats
+    parts = re.split(r'[;\n]', cookie_str)
+    for part in parts:
+        part = part.strip()
+        if '=' in part:
+            name, value = part.split('=', 1)
+            cookies[name.strip()] = value.strip()
+    return cookies
 
 
 
@@ -867,14 +880,10 @@ def format_phone_number(phone: str) -> str:
 def fetch_phone_data(url: str) -> dict:
     """Fetch phone data using curl_cffi with Chrome TLS impersonation"""
 
-    # Load saved datadome cookie
-    saved_cookie = load_datadome_cookie()
-
-    # Build cookies dict
-    cookies = {}
-    if saved_cookie:
-        cookies['datadome'] = saved_cookie
-        print(f"Using saved datadome cookie")
+    # Load ALL saved cookies
+    cookies = load_cookies()
+    if cookies:
+        print(f"Using {len(cookies)} saved cookies: {list(cookies.keys())}")
 
     headers = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -974,15 +983,15 @@ class CaptchaSolveView(discord.ui.View):
         self.stop()
 
 
-class CookieInputModal(discord.ui.Modal, title="Paste DataDome Cookie"):
-    """Modal for entering the datadome cookie"""
+class CookieInputModal(discord.ui.Modal, title="Paste ALL Cookies"):
+    """Modal for entering cookies from browser"""
 
     cookie = discord.ui.TextInput(
-        label="DataDome Cookie Value",
-        placeholder="Paste the 'datadome' cookie value here...",
+        label="All Cookies (copy from DevTools)",
+        placeholder="datadome=xxx; cf_clearance=xxx; laravel_session=xxx",
         style=discord.TextStyle.paragraph,
         required=True,
-        max_length=500
+        max_length=2000
     )
 
     def __init__(self, phone_number: str, original_ctx):
@@ -991,9 +1000,15 @@ class CookieInputModal(discord.ui.Modal, title="Paste DataDome Cookie"):
         self.original_ctx = original_ctx
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Save the cookie
-        cookie_value = self.cookie.value.strip()
-        save_datadome_cookie(cookie_value)
+        # Parse and save ALL cookies
+        cookie_str = self.cookie.value.strip()
+        cookies = parse_cookie_string(cookie_str)
+
+        if not cookies:
+            await interaction.response.send_message("Could not parse cookies. Use format: name=value; name2=value2", ephemeral=True)
+            return
+
+        save_cookies(cookies)
 
         await interaction.response.send_message(
             f"Cookie saved! Retrying lookup for **{self.phone_number}**...",
@@ -1090,8 +1105,9 @@ async def phone_lookup(ctx, *, phone: str = None):
                     f"1. Click **Open Site** to visit usphonebook.com\n"
                     f"2. Solve the CAPTCHA if shown\n"
                     f"3. Open DevTools (F12) → Application → Cookies\n"
-                    f"4. Find the `datadome` cookie and copy its value\n"
-                    f"5. Click **I Solved It - Paste Cookie** and enter the value\n\n"
+                    f"4. Copy **ALL** cookies for usphonebook.com\n"
+                    f"   Format: `datadome=xxx; cf_clearance=xxx; laravel_session=xxx`\n"
+                    f"5. Click **I Solved It - Paste Cookie** and paste all cookies\n\n"
                     f"_The lookup will retry automatically!_"
                 )
 
@@ -1164,18 +1180,22 @@ async def phone_lookup(ctx, *, phone: str = None):
 @bot.command(name='phone_cookie')
 @commands.is_owner()
 async def phone_cookie(ctx, *, cookie_value: str = None):
-    """Set the datadome cookie for phone lookups (owner only). Usage: !phone_cookie <value>"""
+    """Set cookies for phone lookups (owner only). Usage: !phone_cookie name=value; name2=value2"""
     if not cookie_value:
-        # Check if cookie exists
-        current = load_datadome_cookie()
+        # Check if cookies exist
+        current = load_cookies()
         if current:
-            return await ctx.send(f"Cookie is set (length: {len(current)} chars)")
+            return await ctx.send(f"Cookies set: {list(current.keys())}")
         else:
-            return await ctx.send("No cookie set. Usage: `!phone_cookie <value>`")
+            return await ctx.send("No cookies set. Usage: `!phone_cookie name=value; name2=value2`")
 
-    # Save the cookie
-    save_datadome_cookie(cookie_value.strip())
-    await ctx.send(f"Cookie saved! ({len(cookie_value)} chars)")
+    # Parse and save ALL cookies
+    cookies = parse_cookie_string(cookie_value.strip())
+    if not cookies:
+        return await ctx.send("Could not parse cookies. Use format: `name=value; name2=value2`")
+
+    save_cookies(cookies)
+    await ctx.send(f"Saved {len(cookies)} cookies: {list(cookies.keys())}")
 
 
 @bot.command(name='phone_clear_cookie')

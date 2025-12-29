@@ -45,3 +45,4 @@ env/
 .DS_Store
 Thumbs.db
 .datadome_cookie
+.phone_cookies.json
