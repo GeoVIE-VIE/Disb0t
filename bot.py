@@ -838,8 +838,8 @@ def format_phone_number(phone: str) -> str:
     return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
 
 
-def fetch_phone_data(url: str) -> tuple:
-    """Fetch phone data using Playwright headless browser"""
+def fetch_phone_data(url: str) -> dict:
+    """Fetch phone data using Playwright headless browser - scrapes DOM directly"""
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -848,11 +848,62 @@ def fetch_phone_data(url: str) -> tuple:
             )
             page = context.new_page()
             page.goto(url, wait_until='networkidle', timeout=30000)
-            content = page.content()
+
+            # Wait for content to load
+            page.wait_for_timeout(2000)
+
+            result = {}
+
+            # Try to get name from "Current Owner" section
+            try:
+                name_el = page.query_selector('h2.ls_contacts-name, .current-owner-name, h2 a[href*="/"]')
+                if name_el:
+                    result['name'] = name_el.inner_text().strip()
+            except:
+                pass
+
+            # Try alternate name selector
+            if not result.get('name'):
+                try:
+                    # Look for name in the page content
+                    content = page.content()
+                    name_match = re.search(r'Current Owner[^<]*<[^>]*>([^<]+)', content)
+                    if name_match:
+                        result['name'] = name_match.group(1).strip()
+                except:
+                    pass
+
+            # Get address
+            try:
+                addr_el = page.query_selector('.full-address, .ls_contacts-fullAddress')
+                if addr_el:
+                    result['address'] = addr_el.inner_text().strip()
+            except:
+                pass
+
+            # Get relatives
+            try:
+                relatives_section = page.query_selector_all('.relatives a, [class*="relative"] a')
+                if relatives_section:
+                    result['relatives'] = [el.inner_text().strip() for el in relatives_section[:5]]
+            except:
+                pass
+
+            # If we still don't have data, try getting raw page text
+            if not result.get('name'):
+                content = page.content()
+                # Look for gResults in page source
+                match = re.search(r'gResults[\'"]?\s*[:=]\s*[\'"]?(\[.+?\])[\'"]?', content, re.DOTALL)
+                if match:
+                    result['raw_json'] = match.group(1)
+                else:
+                    # Store page content for debugging
+                    result['page_content'] = content[:5000]
+
             browser.close()
-            return 200, content
+            return result
     except Exception as e:
-        return 500, str(e)
+        return {'error': str(e)}
 
 
 @bot.command(name='phone', aliases=['lookup', 'whois'])
@@ -869,78 +920,67 @@ async def phone_lookup(ctx, *, phone: str = None):
         url = f"https://www.usphonebook.com/phone-search/{formatted}"
 
         try:
-            # Run cloudscraper in executor (it's synchronous)
-            status_code, text = await bot.loop.run_in_executor(
+            # Run playwright in executor (it's synchronous)
+            data = await bot.loop.run_in_executor(
                 None, fetch_phone_data, url
             )
 
-            if status_code != 200:
-                return await ctx.send(f"Error fetching data: {status_code}")
+            if 'error' in data:
+                return await ctx.send(f"Error fetching data: {data['error']}")
 
-            # Find gResults in the page - try multiple patterns
-            match = re.search(r"gResults:'(\[.+?\])'", text, re.DOTALL)
-            if not match:
-                # Try alternate pattern with double quotes
-                match = re.search(r'gResults:"(\[.+?\])"', text, re.DOTALL)
-            if not match:
-                # Try without quotes
-                match = re.search(r'gResults:\s*(\[.+?\])', text, re.DOTALL)
-            if not match:
-                return await ctx.send(f"No results found for **{formatted}**")
+            # Check if we got raw JSON data
+            if 'raw_json' in data:
+                json_str = html.unescape(data['raw_json'])
+                results = json.loads(json_str)
+                if results:
+                    person = results[0]
+                    data['name'] = person.get('fullName', 'Unknown')
+                    data['age'] = person.get('age')
+                    city = person.get('city', '')
+                    state = person.get('state', '')
+                    if city and state:
+                        data['location'] = f"{city}, {state}"
+                    current_addr = person.get('currentAddress', {})
+                    if current_addr:
+                        data['address'] = current_addr.get('fullAddressDisplay', '')
+                    relatives = person.get('relatives', [])
+                    if relatives:
+                        data['relatives'] = [r.get('name', '') for r in relatives[:5] if r.get('name')]
 
-            # Decode HTML entities and parse JSON
-            json_str = html.unescape(match.group(1))
-            results = json.loads(json_str)
+            # Check if we have any useful data
+            if not data.get('name') and not data.get('raw_json'):
+                # Debug: show what we got
+                if 'page_content' in data:
+                    # Check if there's a "no results" message
+                    if 'no results' in data['page_content'].lower() or 'not found' in data['page_content'].lower():
+                        return await ctx.send(f"No results found for **{formatted}**")
+                return await ctx.send(f"Could not parse results for **{formatted}**")
 
-            if not results:
-                return await ctx.send(f"No results found for **{formatted}**")
-
-            # Create embed with first result
-            person = results[0]
+            # Create embed
             embed = discord.Embed(
                 title=f"📞 {formatted}",
                 color=discord.Color.blue()
             )
 
             # Name
-            full_name = person.get('fullName', 'Unknown')
-            embed.add_field(name="👤 Name", value=full_name, inline=True)
+            if data.get('name'):
+                embed.add_field(name="👤 Name", value=data['name'], inline=True)
 
             # Age
-            age = person.get('age')
-            if age:
-                embed.add_field(name="🎂 Age", value=str(age), inline=True)
+            if data.get('age'):
+                embed.add_field(name="🎂 Age", value=str(data['age']), inline=True)
 
             # Location
-            city = person.get('city', '')
-            state = person.get('state', '')
-            if city and state:
-                embed.add_field(name="📍 Location", value=f"{city}, {state}", inline=True)
+            if data.get('location'):
+                embed.add_field(name="📍 Location", value=data['location'], inline=True)
 
-            # Current address
-            current_addr = person.get('currentAddress', {})
-            if current_addr:
-                addr_display = current_addr.get('fullAddressDisplay', '')
-                if addr_display:
-                    embed.add_field(name="🏠 Address", value=addr_display, inline=False)
-
-            # Associated names (aliases)
-            assoc_names = person.get('associatedNames', [])
-            if assoc_names:
-                aliases = [n.get('fullName', '') for n in assoc_names[:3] if n.get('fullName')]
-                if aliases:
-                    embed.add_field(name="📝 Also Known As", value=", ".join(aliases), inline=False)
+            # Address
+            if data.get('address'):
+                embed.add_field(name="🏠 Address", value=data['address'], inline=False)
 
             # Relatives
-            relatives = person.get('relatives', [])
-            if relatives:
-                rel_names = [r.get('name', '') for r in relatives[:5] if r.get('name')]
-                if rel_names:
-                    embed.add_field(name="👨‍👩‍👧‍👦 Relatives", value=", ".join(rel_names), inline=False)
-
-            # Show if there are more results
-            if len(results) > 1:
-                embed.set_footer(text=f"Showing 1 of {len(results)} results")
+            if data.get('relatives'):
+                embed.add_field(name="👨‍👩‍👧‍👦 Relatives", value=", ".join(data['relatives']), inline=False)
 
             await ctx.send(embed=embed)
 
