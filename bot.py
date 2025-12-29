@@ -187,8 +187,9 @@ Platforms: steam, psn, xbox, stadia
     # Phone lookup commands
     phone_cmds = """
 `!phone <number>` - Look up phone number
-`!phone_cookie <value>` - Set datadome cookie (owner)
-`!phone_clear_cookie` - Clear saved cookie (owner)
+`!phone_solve` - Interactive CAPTCHA solver (owner)
+`!phone_cookie <value>` - Set cookies manually (owner)
+`!phone_clear_cookie` - Clear saved cookies (owner)
 """
     embed.add_field(name="📞 Phone Lookup", value=phone_cmds.strip(), inline=False)
 
@@ -823,10 +824,19 @@ async def define(ctx, *, word: str = None):
 import html
 import json
 import time
+import threading
 from curl_cffi import requests as curl_requests
+from playwright.sync_api import sync_playwright
 
 # Cookie file path for persistence (now stores ALL cookies as JSON)
 COOKIE_FILE = Path(__file__).parent / '.phone_cookies.json'
+
+# Global browser session for CAPTCHA solving
+_captcha_browser = None
+_captcha_page = None
+_captcha_context = None
+_captcha_playwright = None
+_browser_lock = threading.Lock()
 
 
 def load_cookies() -> dict:
@@ -860,6 +870,231 @@ def parse_cookie_string(cookie_str: str) -> dict:
     return cookies
 
 
+# ============== Interactive CAPTCHA Solving ==============
+
+def start_captcha_browser(url: str = "https://www.usphonebook.com/") -> str:
+    """Start a browser session for CAPTCHA solving. Returns screenshot path."""
+    global _captcha_browser, _captcha_page, _captcha_context, _captcha_playwright
+
+    with _browser_lock:
+        # Close existing session if any
+        close_captcha_browser_internal()
+
+        _captcha_playwright = sync_playwright().start()
+
+        # Launch browser (headed mode with Xvfb on headless server)
+        _captcha_browser = _captcha_playwright.chromium.launch(
+            headless=False,  # Use Xvfb for display
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--window-size=1280,720',
+            ]
+        )
+
+        _captcha_context = _captcha_browser.new_context(
+            viewport={'width': 1280, 'height': 720},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        )
+
+        _captcha_page = _captcha_context.new_page()
+        _captcha_page.goto(url, wait_until='networkidle', timeout=30000)
+
+        # Take screenshot
+        screenshot_path = '/tmp/captcha_session.png'
+        _captcha_page.screenshot(path=screenshot_path)
+        return screenshot_path
+
+
+def captcha_browser_click(x: int, y: int) -> str:
+    """Click at coordinates in the CAPTCHA browser. Returns new screenshot path."""
+    global _captcha_page
+
+    if not _captcha_page:
+        return None
+
+    with _browser_lock:
+        _captcha_page.mouse.click(x, y)
+        time.sleep(1)  # Wait for any animations/loads
+        screenshot_path = '/tmp/captcha_session.png'
+        _captcha_page.screenshot(path=screenshot_path)
+        return screenshot_path
+
+
+def captcha_browser_type(text: str) -> str:
+    """Type text in the CAPTCHA browser. Returns new screenshot path."""
+    global _captcha_page
+
+    if not _captcha_page:
+        return None
+
+    with _browser_lock:
+        _captcha_page.keyboard.type(text, delay=50)
+        time.sleep(0.5)
+        screenshot_path = '/tmp/captcha_session.png'
+        _captcha_page.screenshot(path=screenshot_path)
+        return screenshot_path
+
+
+def captcha_browser_refresh() -> str:
+    """Refresh the CAPTCHA browser page. Returns new screenshot path."""
+    global _captcha_page
+
+    if not _captcha_page:
+        return None
+
+    with _browser_lock:
+        _captcha_page.reload(wait_until='networkidle', timeout=30000)
+        screenshot_path = '/tmp/captcha_session.png'
+        _captcha_page.screenshot(path=screenshot_path)
+        return screenshot_path
+
+
+def captcha_browser_extract_cookies() -> dict:
+    """Extract all cookies from the CAPTCHA browser session."""
+    global _captcha_context
+
+    if not _captcha_context:
+        return {}
+
+    with _browser_lock:
+        cookies = _captcha_context.cookies()
+        result = {}
+        for cookie in cookies:
+            if 'usphonebook' in cookie.get('domain', ''):
+                result[cookie['name']] = cookie['value']
+        return result
+
+
+def close_captcha_browser_internal():
+    """Internal function to close browser (must hold lock)."""
+    global _captcha_browser, _captcha_page, _captcha_context, _captcha_playwright
+
+    if _captcha_page:
+        try:
+            _captcha_page.close()
+        except:
+            pass
+        _captcha_page = None
+
+    if _captcha_context:
+        try:
+            _captcha_context.close()
+        except:
+            pass
+        _captcha_context = None
+
+    if _captcha_browser:
+        try:
+            _captcha_browser.close()
+        except:
+            pass
+        _captcha_browser = None
+
+    if _captcha_playwright:
+        try:
+            _captcha_playwright.stop()
+        except:
+            pass
+        _captcha_playwright = None
+
+
+def close_captcha_browser():
+    """Close the CAPTCHA browser session."""
+    with _browser_lock:
+        close_captcha_browser_internal()
+
+
+class CaptchaSolverView(discord.ui.View):
+    """Interactive view for solving CAPTCHA via Discord"""
+
+    def __init__(self, ctx):
+        super().__init__(timeout=600)  # 10 minute timeout
+        self.ctx = ctx
+        self.click_mode = False
+        self.last_message = None
+
+    async def send_screenshot(self, interaction_or_ctx, message: str = None):
+        """Send current screenshot to Discord"""
+        screenshot_path = Path('/tmp/captcha_session.png')
+        if screenshot_path.exists():
+            file = discord.File(screenshot_path, filename='captcha.png')
+            content = message or "**CAPTCHA Browser** - Click coordinates or use buttons below"
+            if hasattr(interaction_or_ctx, 'followup'):
+                await interaction_or_ctx.followup.send(content, file=file, view=self)
+            else:
+                self.last_message = await interaction_or_ctx.send(content, file=file, view=self)
+
+    @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=0)
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await bot.loop.run_in_executor(None, captcha_browser_refresh)
+        await self.send_screenshot(interaction, "Page refreshed!")
+
+    @discord.ui.button(label="🖱️ Click Mode", style=discord.ButtonStyle.primary, row=0)
+    async def click_mode_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.click_mode = True
+        await interaction.response.send_message(
+            "**Click Mode ON** - Send coordinates like `640 360` (center of 1280x720 screen)\n"
+            "Or send `click 640 360` to click at that position.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="⌨️ Type Text", style=discord.ButtonStyle.primary, row=0)
+    async def type_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = TypeTextModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="✅ Done - Save Cookies", style=discord.ButtonStyle.success, row=1)
+    async def done_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+
+        # Extract cookies
+        cookies = await bot.loop.run_in_executor(None, captcha_browser_extract_cookies)
+
+        if cookies:
+            save_cookies(cookies)
+            await interaction.followup.send(
+                f"**Cookies saved!** ({len(cookies)} cookies: {list(cookies.keys())})\n"
+                f"You can now use `!phone <number>` to look up numbers.",
+                ephemeral=False
+            )
+        else:
+            await interaction.followup.send("No cookies found. Make sure you solved the CAPTCHA first.", ephemeral=True)
+
+        # Close browser
+        await bot.loop.run_in_executor(None, close_captcha_browser)
+        self.stop()
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, row=1)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await bot.loop.run_in_executor(None, close_captcha_browser)
+        await interaction.followup.send("CAPTCHA session cancelled.", ephemeral=True)
+        self.stop()
+
+
+class TypeTextModal(discord.ui.Modal, title="Type Text"):
+    """Modal for typing text in CAPTCHA browser"""
+
+    text = discord.ui.TextInput(
+        label="Text to type",
+        placeholder="Enter text to type in the browser...",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=200
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await bot.loop.run_in_executor(None, captcha_browser_type, self.text.value)
+
+        # Send updated screenshot
+        screenshot_path = Path('/tmp/captcha_session.png')
+        if screenshot_path.exists():
+            file = discord.File(screenshot_path, filename='captcha.png')
+            await interaction.followup.send(f"Typed: `{self.text.value}`", file=file)
 
 
 def format_phone_number(phone: str) -> str:
@@ -1207,6 +1442,101 @@ async def phone_clear_cookie(ctx):
         await ctx.send("Cookie cleared!")
     else:
         await ctx.send("No cookie to clear.")
+
+
+@bot.command(name='phone_solve')
+@commands.is_owner()
+async def phone_solve(ctx):
+    """Start interactive CAPTCHA solving session (owner only).
+
+    This opens a browser on the server (requires Xvfb for headless servers).
+    You can interact with the page through Discord to solve CAPTCHAs.
+
+    Prerequisites for headless server:
+    - Install Xvfb: sudo apt install xvfb
+    - Run bot with: xvfb-run -a python bot.py
+    """
+    await ctx.send("Starting CAPTCHA solving browser... This may take a moment.")
+
+    async with ctx.typing():
+        try:
+            # Start browser in executor (blocking)
+            screenshot_path = await bot.loop.run_in_executor(
+                None, start_captcha_browser, "https://www.usphonebook.com/"
+            )
+
+            if screenshot_path and Path(screenshot_path).exists():
+                view = CaptchaSolverView(ctx)
+                file = discord.File(screenshot_path, filename='captcha.png')
+
+                instructions = (
+                    "**🌐 CAPTCHA Browser Started!**\n\n"
+                    "**Screen size:** 1280x720 pixels\n"
+                    "**How to interact:**\n"
+                    "• Send `click X Y` to click (e.g. `click 640 360` for center)\n"
+                    "• Use **Type Text** button to enter text\n"
+                    "• Use **Refresh** to reload the page\n"
+                    "• Click **Done** when CAPTCHA is solved to save cookies\n\n"
+                    "_Tip: CAPTCHA checkbox is usually around `click 580 400`_"
+                )
+
+                await ctx.send(instructions, file=file, view=view)
+
+                # Set up message listener for click commands
+                def check(m):
+                    return m.author == ctx.author and m.channel == ctx.channel
+
+                # Listen for click commands in background
+                async def listen_for_clicks():
+                    while True:
+                        try:
+                            msg = await bot.wait_for('message', check=check, timeout=600)
+                            content = msg.content.lower().strip()
+
+                            # Parse click command
+                            if content.startswith('click '):
+                                parts = content.split()
+                                if len(parts) >= 3:
+                                    try:
+                                        x = int(parts[1])
+                                        y = int(parts[2])
+                                        await msg.add_reaction('👆')
+                                        await bot.loop.run_in_executor(None, captcha_browser_click, x, y)
+
+                                        # Send new screenshot
+                                        screenshot_path = Path('/tmp/captcha_session.png')
+                                        if screenshot_path.exists():
+                                            file = discord.File(screenshot_path, filename='captcha.png')
+                                            await ctx.send(f"Clicked at ({x}, {y})", file=file, view=view)
+                                    except ValueError:
+                                        await msg.add_reaction('❌')
+
+                            # Also accept just coordinates like "640 360"
+                            elif re.match(r'^\d+\s+\d+$', content):
+                                parts = content.split()
+                                x, y = int(parts[0]), int(parts[1])
+                                await msg.add_reaction('👆')
+                                await bot.loop.run_in_executor(None, captcha_browser_click, x, y)
+
+                                screenshot_path = Path('/tmp/captcha_session.png')
+                                if screenshot_path.exists():
+                                    file = discord.File(screenshot_path, filename='captcha.png')
+                                    await ctx.send(f"Clicked at ({x}, {y})", file=file, view=view)
+
+                        except asyncio.TimeoutError:
+                            break
+                        except Exception as e:
+                            print(f"Click listener error: {e}")
+                            break
+
+                # Start click listener in background
+                bot.loop.create_task(listen_for_clicks())
+
+            else:
+                await ctx.send("Failed to start browser. Make sure Xvfb is running:\n`xvfb-run -a python bot.py`")
+
+        except Exception as e:
+            await ctx.send(f"Error starting browser: {e}\n\nMake sure you have Xvfb installed and run:\n`xvfb-run -a python bot.py`")
 
 
 # ============== Stock Feature (Alpha Vantage) ==============
