@@ -1251,15 +1251,27 @@ async def phone_lookup(ctx, *, phone: str = None):
 
             # Check if CAPTCHA was detected
             if data.get('captcha_detected'):
-                return await ctx.send(
-                    f"**CAPTCHA detected!** DataDome is blocking the request.\n\n"
-                    f"To fix this, get the `datadome` cookie from your browser:\n"
-                    f"1. Visit usphonebook.com in your browser\n"
-                    f"2. Solve the CAPTCHA if shown\n"
-                    f"3. Open DevTools (F12) > Application > Cookies\n"
-                    f"4. Copy the `datadome` cookie value\n"
-                    f"5. Use `!phone_cookie <value>` to set it"
-                )
+                # Send the screenshot so user can see what's happening
+                screenshot_path = Path('/tmp/phone_debug.png')
+                if screenshot_path.exists():
+                    file = discord.File(screenshot_path, filename='captcha.png')
+                    await ctx.send(
+                        f"**CAPTCHA detected!** DataDome is blocking the request.\n\n"
+                        f"**To fix this:**\n"
+                        f"1. Visit https://www.usphonebook.com/ in your browser\n"
+                        f"2. Solve the CAPTCHA if shown\n"
+                        f"3. Open DevTools (F12) → Application → Cookies\n"
+                        f"4. Find the `datadome` cookie and copy its value\n"
+                        f"5. Run: `!phone_cookie <paste_value_here>`\n"
+                        f"6. Try your lookup again!",
+                        file=file
+                    )
+                else:
+                    await ctx.send(
+                        f"**CAPTCHA detected!** DataDome is blocking the request.\n\n"
+                        f"To fix: visit usphonebook.com, solve CAPTCHA, get `datadome` cookie, run `!phone_cookie <value>`"
+                    )
+                return
 
             # Check if we got raw JSON data
             if 'raw_json' in data:
