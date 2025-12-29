@@ -850,55 +850,50 @@ def fetch_phone_data(url: str) -> dict:
             page.goto(url, wait_until='networkidle', timeout=30000)
 
             # Wait for content to load
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
+
+            # Save screenshot for debugging
+            page.screenshot(path='/tmp/phone_debug.png')
 
             result = {}
+            content = page.content()
 
-            # Try to get name from "Current Owner" section
-            try:
-                name_el = page.query_selector('h2.ls_contacts-name, .current-owner-name, h2 a[href*="/"]')
-                if name_el:
-                    result['name'] = name_el.inner_text().strip()
-            except:
-                pass
+            # Save HTML for debugging
+            with open('/tmp/phone_debug.html', 'w') as f:
+                f.write(content)
 
-            # Try alternate name selector
-            if not result.get('name'):
+            # Look for gResults - try multiple patterns
+            patterns = [
+                r"gResults:'(\[[\s\S]+?\])'",
+                r'gResults:"(\[[\s\S]+?\])"',
+                r"gResults:\s*'(\[[\s\S]+?\])'",
+                r'gResults\s*=\s*(\[[\s\S]+?\]);',
+            ]
+
+            for pattern in patterns:
+                match = re.search(pattern, content)
+                if match:
+                    result['raw_json'] = match.group(1)
+                    break
+
+            # If no gResults, try DOM scraping
+            if not result.get('raw_json'):
+                # Try to get name
                 try:
-                    # Look for name in the page content
-                    content = page.content()
-                    name_match = re.search(r'Current Owner[^<]*<[^>]*>([^<]+)', content)
-                    if name_match:
-                        result['name'] = name_match.group(1).strip()
+                    name_el = page.query_selector('h2 a[href*="/"], .ls_contacts-name')
+                    if name_el:
+                        result['name'] = name_el.inner_text().strip()
                 except:
                     pass
 
-            # Get address
-            try:
-                addr_el = page.query_selector('.full-address, .ls_contacts-fullAddress')
-                if addr_el:
-                    result['address'] = addr_el.inner_text().strip()
-            except:
-                pass
+                # Try to find name in HTML
+                if not result.get('name'):
+                    name_match = re.search(r'class="[^"]*name[^"]*"[^>]*>([^<]+)<', content, re.IGNORECASE)
+                    if name_match:
+                        result['name'] = name_match.group(1).strip()
 
-            # Get relatives
-            try:
-                relatives_section = page.query_selector_all('.relatives a, [class*="relative"] a')
-                if relatives_section:
-                    result['relatives'] = [el.inner_text().strip() for el in relatives_section[:5]]
-            except:
-                pass
-
-            # If we still don't have data, try getting raw page text
-            if not result.get('name'):
-                content = page.content()
-                # Look for gResults in page source
-                match = re.search(r'gResults[\'"]?\s*[:=]\s*[\'"]?(\[.+?\])[\'"]?', content, re.DOTALL)
-                if match:
-                    result['raw_json'] = match.group(1)
-                else:
-                    # Store page content for debugging
-                    result['page_content'] = content[:5000]
+            # Store page title for debugging
+            result['page_title'] = page.title()
 
             browser.close()
             return result
@@ -949,12 +944,9 @@ async def phone_lookup(ctx, *, phone: str = None):
 
             # Check if we have any useful data
             if not data.get('name') and not data.get('raw_json'):
-                # Debug: show what we got
-                if 'page_content' in data:
-                    # Check if there's a "no results" message
-                    if 'no results' in data['page_content'].lower() or 'not found' in data['page_content'].lower():
-                        return await ctx.send(f"No results found for **{formatted}**")
-                return await ctx.send(f"Could not parse results for **{formatted}**")
+                # Debug: show page title to see what we got
+                page_title = data.get('page_title', 'Unknown')
+                return await ctx.send(f"Could not parse results for **{formatted}**\nPage title: {page_title}\nCheck /tmp/phone_debug.png and /tmp/phone_debug.html for details")
 
             # Create embed
             embed = discord.Embed(
