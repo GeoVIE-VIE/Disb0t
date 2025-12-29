@@ -133,14 +133,113 @@ async def play_next(ctx):
         player.current = None
 
 
+# Channel to post command updates
+COMMAND_CHANNEL = "bidenbot"
+
+# Store last posted command list to detect changes
+last_command_hash = None
+
+
+def generate_command_table() -> discord.Embed:
+    """Generate an embed with all bot commands"""
+    embed = discord.Embed(
+        title="🤖 Bot Commands",
+        description="All available commands for the bot",
+        color=discord.Color.blue()
+    )
+
+    # Music commands
+    music_cmds = """
+`!play <url/search>` - Play YouTube audio
+`!skip` / `!s` - Skip current song
+`!stop` - Stop and clear queue
+`!pause` - Pause playback
+`!resume` / `!r` - Resume playback
+`!queue` / `!q` - Show queue
+`!nowplaying` / `!np` - Current song
+`!loop` - Toggle loop mode
+`!volume <0-100>` - Set volume
+`!clear` - Clear queue
+`!leave` / `!dc` - Disconnect
+"""
+    embed.add_field(name="🎵 Music", value=music_cmds.strip(), inline=False)
+
+    # 4chan commands
+    chan_cmds = """
+`!ylyl [count]` - Get YLYL images (max 5)
+`!ylyl_boards` - Show searched boards
+"""
+    embed.add_field(name="😂 YLYL", value=chan_cmds.strip(), inline=False)
+
+    # PUBG commands
+    pubg_cmds = """
+`!pubg <username> [platform]` - Get PUBG stats
+Platforms: steam, psn, xbox, stadia
+"""
+    embed.add_field(name="🎮 PUBG", value=pubg_cmds.strip(), inline=False)
+
+    # Dictionary commands
+    dict_cmds = """
+`!define <word>` / `!d` - Look up word definition
+"""
+    embed.add_field(name="📖 Dictionary", value=dict_cmds.strip(), inline=False)
+
+    # Stock commands
+    stock_cmds = """
+`!stock <symbol>` / `!st` - Get stock quote
+`!chart <symbol> [timeframe]` / `!c` - Stock chart
+Timeframes: 1w, 2w, 1m, 3m, 6m, 1y
+"""
+    embed.add_field(name="📈 Stocks", value=stock_cmds.strip(), inline=False)
+
+    # Utility commands
+    util_cmds = """
+`!commands` - Show this help table
+"""
+    embed.add_field(name="🔧 Utility", value=util_cmds.strip(), inline=False)
+
+    embed.set_footer(text=f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    return embed
+
+
+def get_command_hash() -> str:
+    """Get a hash of current commands to detect changes"""
+    cmd_list = sorted([cmd.name for cmd in bot.commands])
+    return str(hash(tuple(cmd_list)))
+
+
 @bot.event
 async def on_ready():
+    global last_command_hash
     print(f'{bot.user} has connected to Discord!')
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+    # Check if commands changed and post to #bidenbot
+    current_hash = get_command_hash()
+    if current_hash != last_command_hash:
+        last_command_hash = current_hash
+        # Find and post to #bidenbot in all guilds
+        for guild in bot.guilds:
+            channel = discord.utils.get(guild.text_channels, name=COMMAND_CHANNEL)
+            if channel:
+                try:
+                    embed = generate_command_table()
+                    await channel.send(embed=embed)
+                    print(f"Posted command table to #{COMMAND_CHANNEL} in {guild.name}")
+                except Exception as e:
+                    print(f"Failed to post to #{COMMAND_CHANNEL} in {guild.name}: {e}")
+
+
+@bot.command(name='commands', aliases=['help', 'cmds'])
+async def commands_list(ctx):
+    """Show all available commands"""
+    embed = generate_command_table()
+    await ctx.send(embed=embed)
 
 
 @bot.command(name='play', aliases=['p'])
