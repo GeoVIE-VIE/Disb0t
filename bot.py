@@ -7,10 +7,19 @@ import aiohttp
 import random
 import re
 import os
+import io
 import urllib.parse
 from pathlib import Path
 from dotenv import load_dotenv
 from collections import deque
+from datetime import datetime, timedelta
+
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.patches import Rectangle
+import pandas as pd
 
 # Load .env from the same directory as this script
 env_path = Path(__file__).parent / '.env'
@@ -786,6 +795,189 @@ async def stock(ctx, symbol: str = None):
 
             except Exception as e:
                 await ctx.send(f"Error: {e}")
+
+
+def draw_hollow_candles(ax, df):
+    """Draw hollow candlestick chart"""
+    width = 0.6
+
+    for i, (idx, row) in enumerate(df.iterrows()):
+        open_price = row['Open']
+        close_price = row['Close']
+        high_price = row['High']
+        low_price = row['Low']
+
+        # Determine if bullish (up) or bearish (down)
+        is_bullish = close_price >= open_price
+
+        # Colors: hollow green for up, filled red for down
+        if is_bullish:
+            color = '#00ff00'  # Green
+            body_color = 'none'  # Hollow
+            edge_color = '#00ff00'
+        else:
+            color = '#ff0000'  # Red
+            body_color = '#ff0000'  # Filled
+            edge_color = '#ff0000'
+
+        # Draw the wick (high-low line)
+        ax.plot([i, i], [low_price, high_price], color=color, linewidth=1)
+
+        # Draw the body
+        body_bottom = min(open_price, close_price)
+        body_height = abs(close_price - open_price)
+
+        if body_height == 0:
+            body_height = 0.01  # Minimum height for doji
+
+        rect = Rectangle(
+            (i - width/2, body_bottom),
+            width, body_height,
+            facecolor=body_color,
+            edgecolor=edge_color,
+            linewidth=1.5
+        )
+        ax.add_patch(rect)
+
+
+async def generate_stock_chart(symbol: str, timeframe: str, api_key: str) -> io.BytesIO:
+    """Generate a candlestick chart for a stock"""
+
+    # Determine API function and parameters based on timeframe
+    timeframe_config = {
+        '1d': ('TIME_SERIES_INTRADAY', 'Time Series (5min)', '5min', 78),      # 1 day = ~78 5-min candles
+        '5d': ('TIME_SERIES_INTRADAY', 'Time Series (60min)', '60min', 40),    # 5 days
+        '1m': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 22),           # 1 month
+        '3m': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 66),           # 3 months
+        '6m': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 132),          # 6 months
+        '1y': ('TIME_SERIES_WEEKLY', 'Weekly Time Series', None, 52),           # 1 year
+    }
+
+    if timeframe not in timeframe_config:
+        return None
+
+    func, series_key, interval, limit = timeframe_config[timeframe]
+
+    # Build URL
+    if interval:
+        url = f"https://www.alphavantage.co/query?function={func}&symbol={symbol}&interval={interval}&apikey={api_key}&outputsize=compact"
+    else:
+        url = f"https://www.alphavantage.co/query?function={func}&symbol={symbol}&apikey={api_key}&outputsize=compact"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status != 200:
+                return None
+
+            data = await response.json()
+
+            if "Error Message" in data or "Note" in data:
+                return None
+
+            time_series = data.get(series_key, {})
+
+            if not time_series:
+                return None
+
+            # Parse data into DataFrame
+            rows = []
+            for date_str, values in list(time_series.items())[:limit]:
+                rows.append({
+                    'Date': date_str,
+                    'Open': float(values.get('1. open', 0)),
+                    'High': float(values.get('2. high', 0)),
+                    'Low': float(values.get('3. low', 0)),
+                    'Close': float(values.get('4. close', 0)),
+                    'Volume': int(values.get('5. volume', 0))
+                })
+
+            if not rows:
+                return None
+
+            df = pd.DataFrame(rows)
+            df = df.iloc[::-1]  # Reverse to chronological order
+            df.reset_index(drop=True, inplace=True)
+
+            # Create chart
+            fig, ax = plt.subplots(figsize=(12, 6), facecolor='#1a1a2e')
+            ax.set_facecolor('#1a1a2e')
+
+            # Draw hollow candles
+            draw_hollow_candles(ax, df)
+
+            # Style the chart
+            ax.set_xlim(-1, len(df))
+            ax.set_ylabel('Price ($)', color='white', fontsize=12)
+            ax.tick_params(colors='white')
+            ax.grid(True, alpha=0.3, color='gray')
+
+            # X-axis labels (show every nth label)
+            n = max(1, len(df) // 8)
+            ax.set_xticks(range(0, len(df), n))
+            ax.set_xticklabels([df.iloc[i]['Date'].split()[0] if i < len(df) else '' for i in range(0, len(df), n)],
+                              rotation=45, ha='right', color='white', fontsize=8)
+
+            # Title
+            latest_price = df.iloc[-1]['Close']
+            first_price = df.iloc[0]['Open']
+            change = latest_price - first_price
+            change_pct = (change / first_price) * 100 if first_price else 0
+
+            if change >= 0:
+                title_color = '#00ff00'
+                change_str = f"+${change:.2f} (+{change_pct:.2f}%)"
+            else:
+                title_color = '#ff0000'
+                change_str = f"-${abs(change):.2f} ({change_pct:.2f}%)"
+
+            ax.set_title(f"{symbol} - {timeframe.upper()} | ${latest_price:.2f} {change_str}",
+                        color=title_color, fontsize=14, fontweight='bold')
+
+            # Spine colors
+            for spine in ax.spines.values():
+                spine.set_color('gray')
+
+            plt.tight_layout()
+
+            # Save to BytesIO
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=100, facecolor='#1a1a2e', edgecolor='none')
+            buf.seek(0)
+            plt.close(fig)
+
+            return buf
+
+
+@bot.command(name='chart', aliases=['c'])
+async def chart(ctx, symbol: str = None, timeframe: str = '1m'):
+    """Get stock chart with hollow candles. Usage: !chart <symbol> [timeframe]
+    Timeframes: 1d, 5d, 1m, 3m, 6m, 1y"""
+
+    if not ALPHAVANTAGE_API_KEY:
+        return await ctx.send("Alpha Vantage API key not configured!")
+
+    if not symbol:
+        return await ctx.send("Usage: `!chart <symbol> [timeframe]`\nTimeframes: 1d, 5d, 1m, 3m, 6m, 1y")
+
+    symbol = symbol.upper().strip()
+    timeframe = timeframe.lower().strip()
+
+    valid_timeframes = ['1d', '5d', '1m', '3m', '6m', '1y']
+    if timeframe not in valid_timeframes:
+        return await ctx.send(f"Invalid timeframe! Use: {', '.join(valid_timeframes)}")
+
+    async with ctx.typing():
+        try:
+            buf = await generate_stock_chart(symbol, timeframe, ALPHAVANTAGE_API_KEY)
+
+            if buf is None:
+                return await ctx.send(f"Could not generate chart for **{symbol}**. Check symbol or try again later.")
+
+            file = discord.File(buf, filename=f"{symbol}_{timeframe}_chart.png")
+            await ctx.send(file=file)
+
+        except Exception as e:
+            await ctx.send(f"Error generating chart: {e}")
 
 
 # Run the bot
