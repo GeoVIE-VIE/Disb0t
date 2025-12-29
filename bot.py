@@ -948,6 +948,48 @@ async def generate_stock_chart(symbol: str, timeframe: str, api_key: str) -> io.
             return buf
 
 
+class ChartTimeframeView(discord.ui.View):
+    """View with buttons to switch chart timeframes"""
+
+    def __init__(self, symbol: str, current_timeframe: str):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.symbol = symbol
+        self.current_timeframe = current_timeframe
+
+        # Add buttons for each timeframe
+        timeframes = ['1d', '5d', '1m', '3m', '6m', '1y']
+        for tf in timeframes:
+            button = discord.ui.Button(
+                label=tf.upper(),
+                style=discord.ButtonStyle.primary if tf == current_timeframe else discord.ButtonStyle.secondary,
+                custom_id=f"chart_{tf}"
+            )
+            button.callback = self.make_callback(tf)
+            self.add_item(button)
+
+    def make_callback(self, timeframe: str):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.defer()
+
+            # Generate new chart
+            buf = await generate_stock_chart(self.symbol, timeframe, ALPHAVANTAGE_API_KEY)
+
+            if buf is None:
+                await interaction.followup.send(
+                    f"Could not generate chart for **{self.symbol}**. Try again later.",
+                    ephemeral=True
+                )
+                return
+
+            # Create new view with updated current timeframe
+            new_view = ChartTimeframeView(self.symbol, timeframe)
+
+            file = discord.File(buf, filename=f"{self.symbol}_{timeframe}_chart.png")
+            await interaction.message.edit(attachments=[file], view=new_view)
+
+        return callback
+
+
 @bot.command(name='chart', aliases=['c'])
 async def chart(ctx, symbol: str = None, timeframe: str = '1m'):
     """Get stock chart with hollow candles. Usage: !chart <symbol> [timeframe]
@@ -973,8 +1015,10 @@ async def chart(ctx, symbol: str = None, timeframe: str = '1m'):
             if buf is None:
                 return await ctx.send(f"Could not generate chart for **{symbol}**. Check symbol or try again later.")
 
+            # Create view with timeframe buttons
+            view = ChartTimeframeView(symbol, timeframe)
             file = discord.File(buf, filename=f"{symbol}_{timeframe}_chart.png")
-            await ctx.send(file=file)
+            await ctx.send(file=file, view=view)
 
         except Exception as e:
             await ctx.send(f"Error generating chart: {e}")
