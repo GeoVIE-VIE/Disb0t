@@ -887,6 +887,81 @@ def human_delay(min_ms: int = 500, max_ms: int = 2000):
     time.sleep(random.randint(min_ms, max_ms) / 1000)
 
 
+def bezier_curve(start: tuple, end: tuple, control1: tuple, control2: tuple, steps: int = 50) -> list:
+    """Generate points along a bezier curve for realistic mouse movement"""
+    points = []
+    for i in range(steps + 1):
+        t = i / steps
+        # Cubic bezier formula
+        x = (1-t)**3 * start[0] + 3*(1-t)**2*t * control1[0] + 3*(1-t)*t**2 * control2[0] + t**3 * end[0]
+        y = (1-t)**3 * start[1] + 3*(1-t)**2*t * control1[1] + 3*(1-t)*t**2 * control2[1] + t**3 * end[1]
+        points.append((int(x), int(y)))
+    return points
+
+
+def human_mouse_move(page, start_x: int, start_y: int, end_x: int, end_y: int):
+    """Move mouse along a natural bezier curve path"""
+    import random
+
+    # Generate random control points for natural curve
+    mid_x = (start_x + end_x) / 2
+    mid_y = (start_y + end_y) / 2
+
+    # Add randomness to control points
+    ctrl1 = (
+        mid_x + random.randint(-100, 100),
+        start_y + random.randint(-50, 50)
+    )
+    ctrl2 = (
+        mid_x + random.randint(-100, 100),
+        end_y + random.randint(-50, 50)
+    )
+
+    points = bezier_curve((start_x, start_y), (end_x, end_y), ctrl1, ctrl2, steps=random.randint(20, 40))
+
+    # Move through points with variable speed
+    for i, (x, y) in enumerate(points):
+        page.mouse.move(x, y)
+        # Variable delay - slower at start/end, faster in middle
+        if i < 5 or i > len(points) - 5:
+            time.sleep(random.uniform(0.01, 0.03))
+        else:
+            time.sleep(random.uniform(0.002, 0.01))
+
+
+def human_type(page, selector: str, text: str):
+    """Type text with human-like delays between keystrokes"""
+    import random
+
+    element = page.locator(selector)
+    element.click()
+    human_delay(100, 300)
+
+    for char in text:
+        page.keyboard.type(char)
+        # Variable delay - longer for difficult keys
+        if char in '!@#$%^&*()':
+            time.sleep(random.uniform(0.15, 0.3))
+        else:
+            time.sleep(random.uniform(0.05, 0.15))
+
+
+def random_scroll(page):
+    """Perform random scrolling like a human reading"""
+    import random
+
+    for _ in range(random.randint(2, 4)):
+        # Scroll down
+        scroll_amount = random.randint(100, 400)
+        page.mouse.wheel(0, scroll_amount)
+        human_delay(300, 800)
+
+        # Sometimes scroll up a bit
+        if random.random() < 0.3:
+            page.mouse.wheel(0, -random.randint(50, 150))
+            human_delay(200, 500)
+
+
 def format_phone_number(phone: str) -> str:
     """Format phone number to XXX-XXX-XXXX"""
     # Remove all non-digits
@@ -903,8 +978,11 @@ def format_phone_number(phone: str) -> str:
 
 
 def fetch_phone_data(url: str) -> dict:
-    """Fetch phone data using ultra-realistic stealth browser with anti-detection"""
+    """Fetch phone data using ultra-realistic human simulation"""
     import random
+
+    # Extract phone number from URL
+    phone_number = url.split('/')[-1]
 
     # Pick a random fingerprint
     fingerprint = random.choice(BROWSER_FINGERPRINTS)
@@ -988,37 +1066,109 @@ def fetch_phone_data(url: str) -> dict:
                 }])
                 print(f"Loaded saved datadome cookie")
 
-            # Additional stealth overrides (Stealth library handles most, but we add extras)
+            # Additional stealth overrides
             page.add_init_script("""
-                // Override navigator.deviceMemory (not covered by stealth lib)
-                Object.defineProperty(navigator, 'deviceMemory', {
-                    get: () => 8
-                });
-
-                // Ensure connection type looks real
+                Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
                 if (navigator.connection) {
-                    Object.defineProperty(navigator.connection, 'effectiveType', {
-                        get: () => '4g'
-                    });
+                    Object.defineProperty(navigator.connection, 'effectiveType', { get: () => '4g' });
                 }
             """)
 
-            # Human-like behavior: random initial delay
-            human_delay(800, 1500)
+            # === PHASE 1: Visit homepage first to establish session ===
+            print("Phase 1: Visiting homepage...")
+            human_delay(500, 1000)
 
-            # Navigate to URL
-            page.goto(url, wait_until='networkidle', timeout=45000)
+            page.goto('https://www.usphonebook.com/', wait_until='networkidle', timeout=45000)
+            human_delay(2000, 4000)
 
-            # Human-like behavior: wait and simulate reading
+            # Check for CAPTCHA on homepage
+            content = page.content()
+            if 'geo.captcha-delivery.com' in content or 'datadome' in content.lower():
+                page.screenshot(path='/tmp/phone_debug.png')
+                with open('/tmp/phone_debug.html', 'w') as f:
+                    f.write(content)
+                browser.close()
+                return {'captcha_detected': True, 'page_title': page.title()}
+
+            # === PHASE 2: Natural mouse movements on homepage ===
+            print("Phase 2: Simulating human browsing...")
+
+            # Move mouse around naturally
+            viewport = fingerprint['viewport']
+            current_x, current_y = viewport['width'] // 2, viewport['height'] // 2
+
+            # Random mouse movements
+            for _ in range(random.randint(2, 4)):
+                target_x = random.randint(100, viewport['width'] - 100)
+                target_y = random.randint(100, viewport['height'] - 200)
+                human_mouse_move(page, current_x, current_y, target_x, target_y)
+                current_x, current_y = target_x, target_y
+                human_delay(300, 700)
+
+            # Random scrolling
+            random_scroll(page)
+            human_delay(1000, 2000)
+
+            # === PHASE 3: Find and use the search box ===
+            print("Phase 3: Using search form...")
+
+            # Try to find search input
+            search_selectors = [
+                'input[name="q"]',
+                'input[type="search"]',
+                'input[placeholder*="phone"]',
+                'input[placeholder*="search"]',
+                '#search',
+                '.search-input',
+                'input.form-control',
+            ]
+
+            search_input = None
+            for selector in search_selectors:
+                try:
+                    el = page.locator(selector).first
+                    if el.is_visible():
+                        search_input = el
+                        break
+                except:
+                    continue
+
+            if search_input:
+                # Move mouse to search box with bezier curve
+                box = search_input.bounding_box()
+                if box:
+                    target_x = int(box['x'] + box['width'] / 2)
+                    target_y = int(box['y'] + box['height'] / 2)
+                    human_mouse_move(page, current_x, current_y, target_x, target_y)
+                    human_delay(200, 400)
+
+                    # Click on search box
+                    search_input.click()
+                    human_delay(300, 600)
+
+                    # Type phone number with human-like delays
+                    for char in phone_number:
+                        page.keyboard.type(char)
+                        time.sleep(random.uniform(0.05, 0.15))
+
+                    human_delay(500, 1000)
+
+                    # Press Enter
+                    page.keyboard.press('Enter')
+                    human_delay(2000, 4000)
+
+                    # Wait for results
+                    page.wait_for_load_state('networkidle', timeout=30000)
+            else:
+                # Fallback: direct navigation
+                print("Search box not found, using direct URL...")
+                page.goto(url, wait_until='networkidle', timeout=45000)
+
+            # === PHASE 4: Get results ===
             human_delay(1500, 3000)
 
-            # Simulate mouse movement
-            page.mouse.move(random.randint(100, 500), random.randint(100, 400))
-            human_delay(200, 500)
-
-            # Scroll down slightly like a human
-            page.mouse.wheel(0, random.randint(100, 300))
-            human_delay(500, 1000)
+            # More natural behavior on results page
+            random_scroll(page)
 
             # Get content
             content = page.content()
@@ -1053,7 +1203,6 @@ def fetch_phone_data(url: str) -> dict:
 
             # If no gResults, try DOM scraping
             if not result.get('raw_json'):
-                # Try to get name
                 try:
                     name_el = page.query_selector('h2 a[href*="/"], .ls_contacts-name')
                     if name_el:
@@ -1061,17 +1210,15 @@ def fetch_phone_data(url: str) -> dict:
                 except:
                     pass
 
-                # Try to find name in HTML
                 if not result.get('name'):
                     name_match = re.search(r'class="[^"]*name[^"]*"[^>]*>([^<]+)<', content, re.IGNORECASE)
                     if name_match:
                         result['name'] = name_match.group(1).strip()
 
-            # Store page title for debugging
             result['page_title'] = page.title()
-
             browser.close()
             return result
+
     except Exception as e:
         return {'error': str(e)}
 
