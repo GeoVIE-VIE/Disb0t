@@ -187,6 +187,8 @@ Platforms: steam, psn, xbox, stadia
     # Phone lookup commands
     phone_cmds = """
 `!phone <number>` - Look up phone number
+`!phone_cookie <value>` - Set datadome cookie (owner)
+`!phone_clear_cookie` - Clear saved cookie (owner)
 """
     embed.add_field(name="📞 Phone Lookup", value=phone_cmds.strip(), inline=False)
 
@@ -820,7 +822,69 @@ async def define(ctx, *, word: str = None):
 
 import html
 import json
+import time
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+
+# Cookie file path for datadome persistence
+COOKIE_FILE = Path(__file__).parent / '.datadome_cookie'
+
+
+def load_datadome_cookie() -> str:
+    """Load saved datadome cookie from file"""
+    if COOKIE_FILE.exists():
+        try:
+            return COOKIE_FILE.read_text().strip()
+        except:
+            pass
+    return None
+
+
+def save_datadome_cookie(cookie_value: str):
+    """Save datadome cookie to file"""
+    try:
+        COOKIE_FILE.write_text(cookie_value)
+    except:
+        pass
+
+
+# Realistic browser fingerprints to rotate through
+BROWSER_FINGERPRINTS = [
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'viewport': {'width': 1920, 'height': 1080},
+        'locale': 'en-US',
+        'timezone_id': 'America/Chicago',
+        'platform': 'Win32',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'viewport': {'width': 1536, 'height': 864},
+        'locale': 'en-US',
+        'timezone_id': 'America/New_York',
+        'platform': 'Win32',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'viewport': {'width': 1440, 'height': 900},
+        'locale': 'en-US',
+        'timezone_id': 'America/Los_Angeles',
+        'platform': 'MacIntel',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'viewport': {'width': 1920, 'height': 1080},
+        'locale': 'en-US',
+        'timezone_id': 'America/Denver',
+        'platform': 'Win32',
+    },
+]
+
+
+def human_delay(min_ms: int = 500, max_ms: int = 2000):
+    """Random human-like delay"""
+    import random
+    time.sleep(random.randint(min_ms, max_ms) / 1000)
 
 
 def format_phone_number(phone: str) -> str:
@@ -839,28 +903,180 @@ def format_phone_number(phone: str) -> str:
 
 
 def fetch_phone_data(url: str) -> dict:
-    """Fetch phone data using Playwright headless browser - scrapes DOM directly"""
+    """Fetch phone data using ultra-realistic stealth browser with anti-detection"""
+    import random
+
+    # Pick a random fingerprint
+    fingerprint = random.choice(BROWSER_FINGERPRINTS)
+
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            # Launch with anti-detection flags
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--disable-infobars',
+                    '--disable-background-networking',
+                    '--disable-breakpad',
+                    '--disable-component-update',
+                    '--disable-domain-reliability',
+                    '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
+                    '--disable-hang-monitor',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-popup-blocking',
+                    '--disable-prompt-on-repost',
+                    '--disable-renderer-backgrounding',
+                    '--disable-sync',
+                    '--metrics-recording-only',
+                    '--no-first-run',
+                    '--safebrowsing-disable-auto-update',
+                    '--password-store=basic',
+                    '--use-mock-keychain',
+                    '--window-size=1920,1080',
+                ]
             )
+
+            # Create realistic browser context
+            context = browser.new_context(
+                user_agent=fingerprint['user_agent'],
+                viewport=fingerprint['viewport'],
+                locale=fingerprint['locale'],
+                timezone_id=fingerprint['timezone_id'],
+                geolocation={'latitude': 37.7749, 'longitude': -122.4194},
+                permissions=['geolocation'],
+                color_scheme='light',
+                device_scale_factor=1,
+                has_touch=False,
+                is_mobile=False,
+                java_script_enabled=True,
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, https',
+                    'Cache-Control': 'max-age=0',
+                    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1',
+                }
+            )
+
             page = context.new_page()
-            page.goto(url, wait_until='networkidle', timeout=30000)
 
-            # Wait for content to load
-            page.wait_for_timeout(3000)
+            # Apply stealth patches
+            stealth_sync(page)
 
-            # Save screenshot for debugging
-            page.screenshot(path='/tmp/phone_debug.png')
+            # Load saved datadome cookie if available
+            saved_cookie = load_datadome_cookie()
+            if saved_cookie:
+                context.add_cookies([{
+                    'name': 'datadome',
+                    'value': saved_cookie,
+                    'domain': '.usphonebook.com',
+                    'path': '/'
+                }])
+                print(f"Loaded saved datadome cookie")
 
-            result = {}
+            # Override navigator properties for extra stealth
+            page.add_init_script(f"""
+                // Override navigator.webdriver
+                Object.defineProperty(navigator, 'webdriver', {{
+                    get: () => undefined
+                }});
+
+                // Override navigator.plugins
+                Object.defineProperty(navigator, 'plugins', {{
+                    get: () => [
+                        {{name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'}},
+                        {{name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''}},
+                        {{name: 'Native Client', filename: 'internal-nacl-plugin', description: ''}}
+                    ]
+                }});
+
+                // Override navigator.languages
+                Object.defineProperty(navigator, 'languages', {{
+                    get: () => ['en-US', 'en']
+                }});
+
+                // Override navigator.platform
+                Object.defineProperty(navigator, 'platform', {{
+                    get: () => '{fingerprint["platform"]}'
+                }});
+
+                // Override navigator.hardwareConcurrency
+                Object.defineProperty(navigator, 'hardwareConcurrency', {{
+                    get: () => 8
+                }});
+
+                // Override navigator.deviceMemory
+                Object.defineProperty(navigator, 'deviceMemory', {{
+                    get: () => 8
+                }});
+
+                // Spoof WebGL vendor/renderer
+                const getParameterOrig = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(parameter) {{
+                    if (parameter === 37445) return 'Google Inc. (NVIDIA)';
+                    if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                    return getParameterOrig.call(this, parameter);
+                }};
+
+                // Override permissions query
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({{ state: Notification.permission }}) :
+                        originalQuery(parameters)
+                );
+
+                // Add missing chrome object
+                window.chrome = {{
+                    runtime: {{}},
+                    loadTimes: function() {{}},
+                    csi: function() {{}},
+                    app: {{}}
+                }};
+            """)
+
+            # Human-like behavior: random initial delay
+            human_delay(800, 1500)
+
+            # Navigate to URL
+            page.goto(url, wait_until='networkidle', timeout=45000)
+
+            # Human-like behavior: wait and simulate reading
+            human_delay(1500, 3000)
+
+            # Simulate mouse movement
+            page.mouse.move(random.randint(100, 500), random.randint(100, 400))
+            human_delay(200, 500)
+
+            # Scroll down slightly like a human
+            page.mouse.wheel(0, random.randint(100, 300))
+            human_delay(500, 1000)
+
+            # Get content
             content = page.content()
 
-            # Save HTML for debugging
+            # Save debug files
+            page.screenshot(path='/tmp/phone_debug.png')
             with open('/tmp/phone_debug.html', 'w') as f:
                 f.write(content)
+
+            result = {}
+
+            # Check if we hit CAPTCHA
+            if 'geo.captcha-delivery.com' in content or 'datadome' in content.lower():
+                result['captcha_detected'] = True
+                result['page_title'] = page.title()
+                browser.close()
+                return result
 
             # Look for gResults - try multiple patterns
             patterns = [
@@ -923,6 +1139,18 @@ async def phone_lookup(ctx, *, phone: str = None):
             if 'error' in data:
                 return await ctx.send(f"Error fetching data: {data['error']}")
 
+            # Check if CAPTCHA was detected
+            if data.get('captcha_detected'):
+                return await ctx.send(
+                    f"**CAPTCHA detected!** DataDome is blocking the request.\n\n"
+                    f"To fix this, get the `datadome` cookie from your browser:\n"
+                    f"1. Visit usphonebook.com in your browser\n"
+                    f"2. Solve the CAPTCHA if shown\n"
+                    f"3. Open DevTools (F12) > Application > Cookies\n"
+                    f"4. Copy the `datadome` cookie value\n"
+                    f"5. Use `!phone_cookie <value>` to set it"
+                )
+
             # Check if we got raw JSON data
             if 'raw_json' in data:
                 json_str = html.unescape(data['raw_json'])
@@ -980,6 +1208,34 @@ async def phone_lookup(ctx, *, phone: str = None):
             await ctx.send(f"Error parsing results for **{formatted}**")
         except Exception as e:
             await ctx.send(f"Error: {e}")
+
+
+@bot.command(name='phone_cookie')
+@commands.is_owner()
+async def phone_cookie(ctx, *, cookie_value: str = None):
+    """Set the datadome cookie for phone lookups (owner only). Usage: !phone_cookie <value>"""
+    if not cookie_value:
+        # Check if cookie exists
+        current = load_datadome_cookie()
+        if current:
+            return await ctx.send(f"Cookie is set (length: {len(current)} chars)")
+        else:
+            return await ctx.send("No cookie set. Usage: `!phone_cookie <value>`")
+
+    # Save the cookie
+    save_datadome_cookie(cookie_value.strip())
+    await ctx.send(f"Cookie saved! ({len(cookie_value)} chars)")
+
+
+@bot.command(name='phone_clear_cookie')
+@commands.is_owner()
+async def phone_clear_cookie(ctx):
+    """Clear the saved datadome cookie (owner only)"""
+    if COOKIE_FILE.exists():
+        COOKIE_FILE.unlink()
+        await ctx.send("Cookie cleared!")
+    else:
+        await ctx.send("No cookie to clear.")
 
 
 # ============== Stock Feature (Alpha Vantage) ==============
