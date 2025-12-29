@@ -823,8 +823,7 @@ async def define(ctx, *, word: str = None):
 import html
 import json
 import time
-from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
+from curl_cffi import requests as curl_requests
 
 # Cookie file path for datadome persistence
 COOKIE_FILE = Path(__file__).parent / '.datadome_cookie'
@@ -848,118 +847,6 @@ def save_datadome_cookie(cookie_value: str):
         pass
 
 
-# Realistic browser fingerprints to rotate through
-BROWSER_FINGERPRINTS = [
-    {
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'viewport': {'width': 1920, 'height': 1080},
-        'locale': 'en-US',
-        'timezone_id': 'America/Chicago',
-        'platform': 'Win32',
-    },
-    {
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'viewport': {'width': 1536, 'height': 864},
-        'locale': 'en-US',
-        'timezone_id': 'America/New_York',
-        'platform': 'Win32',
-    },
-    {
-        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'viewport': {'width': 1440, 'height': 900},
-        'locale': 'en-US',
-        'timezone_id': 'America/Los_Angeles',
-        'platform': 'MacIntel',
-    },
-    {
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-        'viewport': {'width': 1920, 'height': 1080},
-        'locale': 'en-US',
-        'timezone_id': 'America/Denver',
-        'platform': 'Win32',
-    },
-]
-
-
-def human_delay(min_ms: int = 500, max_ms: int = 2000):
-    """Random human-like delay"""
-    import random
-    time.sleep(random.randint(min_ms, max_ms) / 1000)
-
-
-def bezier_curve(start: tuple, end: tuple, control1: tuple, control2: tuple, steps: int = 50) -> list:
-    """Generate points along a bezier curve for realistic mouse movement"""
-    points = []
-    for i in range(steps + 1):
-        t = i / steps
-        # Cubic bezier formula
-        x = (1-t)**3 * start[0] + 3*(1-t)**2*t * control1[0] + 3*(1-t)*t**2 * control2[0] + t**3 * end[0]
-        y = (1-t)**3 * start[1] + 3*(1-t)**2*t * control1[1] + 3*(1-t)*t**2 * control2[1] + t**3 * end[1]
-        points.append((int(x), int(y)))
-    return points
-
-
-def human_mouse_move(page, start_x: int, start_y: int, end_x: int, end_y: int):
-    """Move mouse along a natural bezier curve path"""
-    import random
-
-    # Generate random control points for natural curve
-    mid_x = (start_x + end_x) / 2
-    mid_y = (start_y + end_y) / 2
-
-    # Add randomness to control points
-    ctrl1 = (
-        mid_x + random.randint(-100, 100),
-        start_y + random.randint(-50, 50)
-    )
-    ctrl2 = (
-        mid_x + random.randint(-100, 100),
-        end_y + random.randint(-50, 50)
-    )
-
-    points = bezier_curve((start_x, start_y), (end_x, end_y), ctrl1, ctrl2, steps=random.randint(20, 40))
-
-    # Move through points with variable speed
-    for i, (x, y) in enumerate(points):
-        page.mouse.move(x, y)
-        # Variable delay - slower at start/end, faster in middle
-        if i < 5 or i > len(points) - 5:
-            time.sleep(random.uniform(0.01, 0.03))
-        else:
-            time.sleep(random.uniform(0.002, 0.01))
-
-
-def human_type(page, selector: str, text: str):
-    """Type text with human-like delays between keystrokes"""
-    import random
-
-    element = page.locator(selector)
-    element.click()
-    human_delay(100, 300)
-
-    for char in text:
-        page.keyboard.type(char)
-        # Variable delay - longer for difficult keys
-        if char in '!@#$%^&*()':
-            time.sleep(random.uniform(0.15, 0.3))
-        else:
-            time.sleep(random.uniform(0.05, 0.15))
-
-
-def random_scroll(page):
-    """Perform random scrolling like a human reading"""
-    import random
-
-    for _ in range(random.randint(2, 4)):
-        # Scroll down
-        scroll_amount = random.randint(100, 400)
-        page.mouse.wheel(0, scroll_amount)
-        human_delay(300, 800)
-
-        # Sometimes scroll up a bit
-        if random.random() < 0.3:
-            page.mouse.wheel(0, -random.randint(50, 150))
-            human_delay(200, 500)
 
 
 def format_phone_number(phone: str) -> str:
@@ -978,250 +865,81 @@ def format_phone_number(phone: str) -> str:
 
 
 def fetch_phone_data(url: str) -> dict:
-    """Fetch phone data using ultra-realistic human simulation"""
-    import random
+    """Fetch phone data using curl_cffi with Chrome TLS impersonation"""
 
-    # Extract phone number from URL
-    phone_number = url.split('/')[-1]
+    # Load saved datadome cookie
+    saved_cookie = load_datadome_cookie()
 
-    # Pick a random fingerprint
-    fingerprint = random.choice(BROWSER_FINGERPRINTS)
+    # Build cookies dict
+    cookies = {}
+    if saved_cookie:
+        cookies['datadome'] = saved_cookie
+        print(f"Using saved datadome cookie")
+
+    headers = {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'max-age=0',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+    }
 
     try:
-        with sync_playwright() as p:
-            # Launch with anti-detection flags
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-dev-shm-usage',
-                    '--disable-infobars',
-                    '--disable-background-networking',
-                    '--disable-breakpad',
-                    '--disable-component-update',
-                    '--disable-domain-reliability',
-                    '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
-                    '--disable-hang-monitor',
-                    '--disable-ipc-flooding-protection',
-                    '--disable-popup-blocking',
-                    '--disable-prompt-on-repost',
-                    '--disable-renderer-backgrounding',
-                    '--disable-sync',
-                    '--metrics-recording-only',
-                    '--no-first-run',
-                    '--safebrowsing-disable-auto-update',
-                    '--password-store=basic',
-                    '--use-mock-keychain',
-                    '--window-size=1920,1080',
-                ]
-            )
+        # Use curl_cffi with Chrome impersonation (mimics Chrome's TLS fingerprint)
+        response = curl_requests.get(
+            url,
+            headers=headers,
+            cookies=cookies if cookies else None,
+            impersonate="chrome120",  # Impersonate Chrome 120
+            timeout=30
+        )
 
-            # Create realistic browser context
-            context = browser.new_context(
-                user_agent=fingerprint['user_agent'],
-                viewport=fingerprint['viewport'],
-                locale=fingerprint['locale'],
-                timezone_id=fingerprint['timezone_id'],
-                geolocation={'latitude': 37.7749, 'longitude': -122.4194},
-                permissions=['geolocation'],
-                color_scheme='light',
-                device_scale_factor=1,
-                has_touch=False,
-                is_mobile=False,
-                java_script_enabled=True,
-                extra_http_headers={
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, https',
-                    'Cache-Control': 'max-age=0',
-                    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                    'Sec-Ch-Ua-Mobile': '?0',
-                    'Sec-Ch-Ua-Platform': '"Windows"',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1',
-                }
-            )
+        content = response.text
 
-            page = context.new_page()
+        # Save debug files
+        with open('/tmp/phone_debug.html', 'w') as f:
+            f.write(content)
 
-            # Apply stealth patches using new Stealth API
-            stealth = Stealth(
-                navigator_platform_override=fingerprint['platform'],
-                webgl_vendor_override='Google Inc. (NVIDIA)',
-                webgl_renderer_override='ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)'
-            )
-            stealth.apply_stealth_sync(page)
+        result = {}
 
-            # Load saved datadome cookie if available
-            saved_cookie = load_datadome_cookie()
-            if saved_cookie:
-                context.add_cookies([{
-                    'name': 'datadome',
-                    'value': saved_cookie,
-                    'domain': '.usphonebook.com',
-                    'path': '/'
-                }])
-                print(f"Loaded saved datadome cookie")
-
-            # Additional stealth overrides
-            page.add_init_script("""
-                Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-                if (navigator.connection) {
-                    Object.defineProperty(navigator.connection, 'effectiveType', { get: () => '4g' });
-                }
-            """)
-
-            # === PHASE 1: Visit homepage first to establish session ===
-            print("Phase 1: Visiting homepage...")
-            human_delay(500, 1000)
-
-            page.goto('https://www.usphonebook.com/', wait_until='networkidle', timeout=45000)
-            human_delay(2000, 4000)
-
-            # Check for CAPTCHA on homepage
-            content = page.content()
-            if 'geo.captcha-delivery.com' in content or 'datadome' in content.lower():
-                page.screenshot(path='/tmp/phone_debug.png')
-                with open('/tmp/phone_debug.html', 'w') as f:
-                    f.write(content)
-                title = page.title()
-                browser.close()
-                return {'captcha_detected': True, 'page_title': title}
-
-            # === PHASE 2: Natural mouse movements on homepage ===
-            print("Phase 2: Simulating human browsing...")
-
-            # Move mouse around naturally
-            viewport = fingerprint['viewport']
-            current_x, current_y = viewport['width'] // 2, viewport['height'] // 2
-
-            # Random mouse movements
-            for _ in range(random.randint(2, 4)):
-                target_x = random.randint(100, viewport['width'] - 100)
-                target_y = random.randint(100, viewport['height'] - 200)
-                human_mouse_move(page, current_x, current_y, target_x, target_y)
-                current_x, current_y = target_x, target_y
-                human_delay(300, 700)
-
-            # Random scrolling
-            random_scroll(page)
-            human_delay(1000, 2000)
-
-            # === PHASE 3: Find and use the search box ===
-            print("Phase 3: Using search form...")
-
-            # Try to find search input
-            search_selectors = [
-                'input[name="q"]',
-                'input[type="search"]',
-                'input[placeholder*="phone"]',
-                'input[placeholder*="search"]',
-                '#search',
-                '.search-input',
-                'input.form-control',
-            ]
-
-            search_input = None
-            for selector in search_selectors:
-                try:
-                    el = page.locator(selector).first
-                    if el.is_visible():
-                        search_input = el
-                        break
-                except:
-                    continue
-
-            if search_input:
-                # Move mouse to search box with bezier curve
-                box = search_input.bounding_box()
-                if box:
-                    target_x = int(box['x'] + box['width'] / 2)
-                    target_y = int(box['y'] + box['height'] / 2)
-                    human_mouse_move(page, current_x, current_y, target_x, target_y)
-                    human_delay(200, 400)
-
-                    # Click on search box
-                    search_input.click()
-                    human_delay(300, 600)
-
-                    # Type phone number with human-like delays
-                    for char in phone_number:
-                        page.keyboard.type(char)
-                        time.sleep(random.uniform(0.05, 0.15))
-
-                    human_delay(500, 1000)
-
-                    # Press Enter
-                    page.keyboard.press('Enter')
-                    human_delay(2000, 4000)
-
-                    # Wait for results
-                    page.wait_for_load_state('networkidle', timeout=30000)
-            else:
-                # Fallback: direct navigation
-                print("Search box not found, using direct URL...")
-                page.goto(url, wait_until='networkidle', timeout=45000)
-
-            # === PHASE 4: Get results ===
-            human_delay(1500, 3000)
-
-            # More natural behavior on results page
-            random_scroll(page)
-
-            # Get content
-            content = page.content()
-
-            # Save debug files
-            page.screenshot(path='/tmp/phone_debug.png')
-            with open('/tmp/phone_debug.html', 'w') as f:
-                f.write(content)
-
-            result = {}
-
-            # Check if we hit CAPTCHA
-            if 'geo.captcha-delivery.com' in content or 'datadome' in content.lower():
-                result['captcha_detected'] = True
-                result['page_title'] = page.title()
-                browser.close()
-                return result
-
-            # Get page title before any potential issues
-            page_title = page.title()
-
-            # Look for gResults - try multiple patterns
-            patterns = [
-                r"gResults:'(\[[\s\S]+?\])'",
-                r'gResults:"(\[[\s\S]+?\])"',
-                r"gResults:\s*'(\[[\s\S]+?\])'",
-                r'gResults\s*=\s*(\[[\s\S]+?\]);',
-            ]
-
-            for pattern in patterns:
-                match = re.search(pattern, content)
-                if match:
-                    result['raw_json'] = match.group(1)
-                    break
-
-            # If no gResults, try DOM scraping
-            if not result.get('raw_json'):
-                try:
-                    name_el = page.query_selector('h2 a[href*="/"], .ls_contacts-name')
-                    if name_el:
-                        result['name'] = name_el.inner_text().strip()
-                except:
-                    pass
-
-                if not result.get('name'):
-                    name_match = re.search(r'class="[^"]*name[^"]*"[^>]*>([^<]+)<', content, re.IGNORECASE)
-                    if name_match:
-                        result['name'] = name_match.group(1).strip()
-
-            result['page_title'] = page_title
-            browser.close()
+        # Check if we hit CAPTCHA/DataDome block
+        if 'geo.captcha-delivery.com' in content or 'DataDome' in content or response.status_code == 403:
+            result['captcha_detected'] = True
+            result['page_title'] = 'DataDome CAPTCHA'
             return result
+
+        # Look for gResults - try multiple patterns
+        patterns = [
+            r"gResults:'(\[[\s\S]+?\])'",
+            r'gResults:"(\[[\s\S]+?\])"',
+            r"gResults:\s*'(\[[\s\S]+?\])'",
+            r'gResults\s*=\s*(\[[\s\S]+?\]);',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, content)
+            if match:
+                result['raw_json'] = match.group(1)
+                break
+
+        # Try to extract name from HTML if no gResults
+        if not result.get('raw_json'):
+            name_match = re.search(r'class="[^"]*name[^"]*"[^>]*>([^<]+)<', content, re.IGNORECASE)
+            if name_match:
+                result['name'] = name_match.group(1).strip()
+
+        # Extract page title
+        title_match = re.search(r'<title>([^<]+)</title>', content)
+        result['page_title'] = title_match.group(1) if title_match else 'Unknown'
+
+        return result
 
     except Exception as e:
         return {'error': str(e)}
