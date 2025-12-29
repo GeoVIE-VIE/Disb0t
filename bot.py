@@ -702,6 +702,92 @@ async def define(ctx, *, word: str = None):
                 await ctx.send(f"Error: {e}")
 
 
+# ============== Stock Feature (Alpha Vantage) ==============
+
+ALPHAVANTAGE_API_KEY = os.getenv('ALPHAVANTAGE_API_KEY')
+
+
+@bot.command(name='stock', aliases=['s', 'stonk'])
+async def stock(ctx, symbol: str = None):
+    """Get stock quote. Usage: !s <symbol>"""
+    if not ALPHAVANTAGE_API_KEY:
+        return await ctx.send("Alpha Vantage API key not configured!")
+
+    if not symbol:
+        return await ctx.send("Usage: `!s <symbol>` (e.g. `!s INTC`)")
+
+    symbol = symbol.upper().strip()
+
+    async with ctx.typing():
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={ALPHAVANTAGE_API_KEY}"
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        return await ctx.send(f"API error: {response.status}")
+
+                    data = await response.json()
+
+                    # Check for errors
+                    if "Error Message" in data:
+                        return await ctx.send(f"Invalid symbol: **{symbol}**")
+
+                    if "Note" in data:
+                        return await ctx.send("API rate limit reached. Try again in a minute.")
+
+                    quote = data.get("Global Quote", {})
+
+                    if not quote:
+                        return await ctx.send(f"No data found for **{symbol}**")
+
+                    # Parse the data
+                    price = float(quote.get("05. price", 0))
+                    change = float(quote.get("09. change", 0))
+                    change_pct = quote.get("10. change percent", "0%").replace("%", "")
+                    change_pct = float(change_pct)
+                    open_price = float(quote.get("02. open", 0))
+                    high = float(quote.get("03. high", 0))
+                    low = float(quote.get("04. low", 0))
+                    volume = int(quote.get("06. volume", 0))
+                    prev_close = float(quote.get("08. previous close", 0))
+
+                    # Determine color based on change
+                    if change > 0:
+                        color = discord.Color.green()
+                        arrow = "📈"
+                        change_str = f"+${change:.2f} (+{change_pct:.2f}%)"
+                    elif change < 0:
+                        color = discord.Color.red()
+                        arrow = "📉"
+                        change_str = f"-${abs(change):.2f} ({change_pct:.2f}%)"
+                    else:
+                        color = discord.Color.greyple()
+                        arrow = "➡️"
+                        change_str = f"$0.00 (0.00%)"
+
+                    embed = discord.Embed(
+                        title=f"{arrow} {symbol}",
+                        description=f"**${price:.2f}**\n{change_str}",
+                        color=color
+                    )
+
+                    embed.add_field(name="Open", value=f"${open_price:.2f}", inline=True)
+                    embed.add_field(name="Prev Close", value=f"${prev_close:.2f}", inline=True)
+                    embed.add_field(name="Volume", value=f"{volume:,}", inline=True)
+
+                    embed.add_field(name="High", value=f"${high:.2f}", inline=True)
+                    embed.add_field(name="Low", value=f"${low:.2f}", inline=True)
+                    embed.add_field(name="Range", value=f"${low:.2f} - ${high:.2f}", inline=True)
+
+                    embed.set_footer(text="Data from Alpha Vantage")
+
+                    await ctx.send(embed=embed)
+
+            except Exception as e:
+                await ctx.send(f"Error: {e}")
+
+
 # Run the bot
 if __name__ == "__main__":
     token = os.getenv('DISCORD_TOKEN')
