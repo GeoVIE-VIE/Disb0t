@@ -844,9 +844,10 @@ async def generate_stock_chart(symbol: str, timeframe: str, api_key: str) -> io.
     """Generate a candlestick chart for a stock"""
 
     # Determine API function and parameters based on timeframe
+    # Note: Intraday data requires premium API - using daily data for all timeframes
     timeframe_config = {
-        '1d': ('TIME_SERIES_INTRADAY', 'Time Series (5min)', '5min', 78),      # 1 day = ~78 5-min candles
-        '5d': ('TIME_SERIES_INTRADAY', 'Time Series (60min)', '60min', 40),    # 5 days
+        '1w': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 5),            # 1 week
+        '2w': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 10),           # 2 weeks
         '1m': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 22),           # 1 month
         '3m': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 66),           # 3 months
         '6m': ('TIME_SERIES_DAILY', 'Time Series (Daily)', None, 132),          # 6 months
@@ -957,7 +958,7 @@ class ChartTimeframeView(discord.ui.View):
         self.current_timeframe = current_timeframe
 
         # Add buttons for each timeframe
-        timeframes = ['1d', '5d', '1m', '3m', '6m', '1y']
+        timeframes = ['1w', '2w', '1m', '3m', '6m', '1y']
         for tf in timeframes:
             button = discord.ui.Button(
                 label=tf.upper(),
@@ -993,18 +994,18 @@ class ChartTimeframeView(discord.ui.View):
 @bot.command(name='chart', aliases=['c'])
 async def chart(ctx, symbol: str = None, timeframe: str = '1m'):
     """Get stock chart with hollow candles. Usage: !chart <symbol> [timeframe]
-    Timeframes: 1d, 5d, 1m, 3m, 6m, 1y"""
+    Timeframes: 1w, 2w, 1m, 3m, 6m, 1y"""
 
     if not ALPHAVANTAGE_API_KEY:
         return await ctx.send("Alpha Vantage API key not configured!")
 
     if not symbol:
-        return await ctx.send("Usage: `!chart <symbol> [timeframe]`\nTimeframes: 1d, 5d, 1m, 3m, 6m, 1y")
+        return await ctx.send("Usage: `!chart <symbol> [timeframe]`\nTimeframes: 1w, 2w, 1m, 3m, 6m, 1y")
 
     symbol = symbol.upper().strip()
     timeframe = timeframe.lower().strip()
 
-    valid_timeframes = ['1d', '5d', '1m', '3m', '6m', '1y']
+    valid_timeframes = ['1w', '2w', '1m', '3m', '6m', '1y']
     if timeframe not in valid_timeframes:
         return await ctx.send(f"Invalid timeframe! Use: {', '.join(valid_timeframes)}")
 
