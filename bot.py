@@ -184,14 +184,14 @@ Platforms: steam, psn, xbox, stadia
 """
     embed.add_field(name="📖 Dictionary", value=dict_cmds.strip(), inline=False)
 
-    # Phone lookup commands
-    phone_cmds = """
-`!phone <number>` - Look up phone number
-`!phone_solve` - Interactive CAPTCHA solver (owner)
-`!phone_cookie <value>` - Set cookies manually (owner)
-`!phone_clear_cookie` - Clear saved cookies (owner)
-"""
-    embed.add_field(name="📞 Phone Lookup", value=phone_cmds.strip(), inline=False)
+    # Phone lookup commands (disabled - DataDome protection)
+    # phone_cmds = """
+    # `!phone <number>` - Look up phone number
+    # `!phone_solve` - Interactive CAPTCHA solver (owner)
+    # `!phone_cookie <value>` - Set cookies manually (owner)
+    # `!phone_clear_cookie` - Clear saved cookies (owner)
+    # """
+    # embed.add_field(name="📞 Phone Lookup", value=phone_cmds.strip(), inline=False)
 
     # Stock commands
     stock_cmds = """
@@ -1317,7 +1317,11 @@ class CookieInputModal(discord.ui.Modal, title="Paste ALL Cookies"):
 @bot.command(name='phone', aliases=['lookup', 'whois'])
 async def phone_lookup(ctx, *, phone: str = None):
     """Look up a phone number. Usage: !phone <number>"""
-    if not phone:
+    # Feature disabled due to DataDome CAPTCHA protection
+    return await ctx.send("Phone lookup is currently disabled due to anti-bot protection on the data source.")
+
+    # Original code commented out below:
+    if False and not phone:
         return await ctx.send("Usage: `!phone <number>` (e.g. `!phone 555-123-4567`)")
 
     formatted = format_phone_number(phone)
@@ -1426,6 +1430,7 @@ async def phone_lookup(ctx, *, phone: str = None):
 @commands.is_owner()
 async def phone_cookie(ctx, *, cookie_value: str = None):
     """Set cookies for phone lookups (owner only). Usage: !phone_cookie name=value; name2=value2"""
+    return await ctx.send("Phone lookup feature is currently disabled.")
     if not cookie_value:
         # Check if cookies exist
         current = load_cookies()
@@ -1447,6 +1452,8 @@ async def phone_cookie(ctx, *, cookie_value: str = None):
 @commands.is_owner()
 async def phone_clear_cookie(ctx):
     """Clear the saved datadome cookie (owner only)"""
+    # Feature disabled due to DataDome CAPTCHA protection
+    return await ctx.send("Phone lookup feature is currently disabled.")
     if COOKIE_FILE.exists():
         COOKIE_FILE.unlink()
         await ctx.send("Cookie cleared!")
@@ -1466,6 +1473,8 @@ async def phone_solve(ctx):
     - Install Xvfb: sudo apt install xvfb
     - Run bot with: xvfb-run -a python bot.py
     """
+    # Feature disabled due to DataDome CAPTCHA protection
+    return await ctx.send("Phone lookup feature is currently disabled.")
     await ctx.send("Starting CAPTCHA solving browser... This may take a moment.")
 
     async with ctx.typing():
