@@ -194,7 +194,7 @@ Timeframes: 1w, 2w, 1m, 3m, 6m, 1y
 
     # Utility commands
     util_cmds = """
-`!commands` - Show this help table
+`!commands` / `!cmds` - Show this help table
 """
     embed.add_field(name="🔧 Utility", value=util_cmds.strip(), inline=False)
 
@@ -235,7 +235,7 @@ async def on_ready():
                     print(f"Failed to post to #{COMMAND_CHANNEL} in {guild.name}: {e}")
 
 
-@bot.command(name='commands', aliases=['help', 'cmds'])
+@bot.command(name='commands', aliases=['cmds'])
 async def commands_list(ctx):
     """Show all available commands"""
     embed = generate_command_table()
