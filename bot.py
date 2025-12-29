@@ -820,7 +820,7 @@ async def define(ctx, *, word: str = None):
 
 import html
 import json
-import cloudscraper
+from playwright.sync_api import sync_playwright
 
 
 def format_phone_number(phone: str) -> str:
@@ -839,19 +839,20 @@ def format_phone_number(phone: str) -> str:
 
 
 def fetch_phone_data(url: str) -> tuple:
-    """Fetch phone data using cloudscraper (runs in executor)"""
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        }
-    )
-    # First visit the homepage to get cookies
-    scraper.get("https://www.usphonebook.com/")
-    # Then fetch the actual page
-    response = scraper.get(url)
-    return response.status_code, response.text
+    """Fetch phone data using Playwright headless browser"""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            page = context.new_page()
+            page.goto(url, wait_until='networkidle', timeout=30000)
+            content = page.content()
+            browser.close()
+            return 200, content
+    except Exception as e:
+        return 500, str(e)
 
 
 @bot.command(name='phone', aliases=['lookup', 'whois'])

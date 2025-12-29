@@ -6,4 +6,4 @@ aiohttp>=3.9.0
 matplotlib>=3.8.0
 mplfinance>=0.12.10b0
 pandas>=2.0.0
-cloudscraper>=1.2.71
+playwright>=1.40.0
