@@ -184,6 +184,12 @@ Platforms: steam, psn, xbox, stadia
 """
     embed.add_field(name="📖 Dictionary", value=dict_cmds.strip(), inline=False)
 
+    # Phone lookup commands
+    phone_cmds = """
+`!phone <number>` - Look up phone number
+"""
+    embed.add_field(name="📞 Phone Lookup", value=phone_cmds.strip(), inline=False)
+
     # Stock commands
     stock_cmds = """
 `!stock <symbol>` / `!st` - Get stock quote
@@ -806,6 +812,118 @@ async def define(ctx, *, word: str = None):
 
                     await ctx.send(embed=embed)
 
+            except Exception as e:
+                await ctx.send(f"Error: {e}")
+
+
+# ============== Phone Lookup Feature ==============
+
+import html
+import json
+
+
+def format_phone_number(phone: str) -> str:
+    """Format phone number to XXX-XXX-XXXX"""
+    # Remove all non-digits
+    digits = re.sub(r'\D', '', phone)
+
+    # Handle 11-digit numbers starting with 1
+    if len(digits) == 11 and digits.startswith('1'):
+        digits = digits[1:]
+
+    if len(digits) != 10:
+        return None
+
+    return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+
+
+@bot.command(name='phone', aliases=['lookup', 'whois'])
+async def phone_lookup(ctx, *, phone: str = None):
+    """Look up a phone number. Usage: !phone <number>"""
+    if not phone:
+        return await ctx.send("Usage: `!phone <number>` (e.g. `!phone 555-123-4567`)")
+
+    formatted = format_phone_number(phone)
+    if not formatted:
+        return await ctx.send("Invalid phone number! Use 10 digits (e.g. `555-123-4567` or `5551234567`)")
+
+    async with ctx.typing():
+        url = f"https://www.usphonebook.com/phone-search/{formatted}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, headers=headers) as response:
+                    if response.status != 200:
+                        return await ctx.send(f"Error fetching data: {response.status}")
+
+                    text = await response.text()
+
+                    # Find gResults in the page
+                    match = re.search(r"gResults:'(\[.*?\])'", text)
+                    if not match:
+                        return await ctx.send(f"No results found for **{formatted}**")
+
+                    # Decode HTML entities and parse JSON
+                    json_str = html.unescape(match.group(1))
+                    results = json.loads(json_str)
+
+                    if not results:
+                        return await ctx.send(f"No results found for **{formatted}**")
+
+                    # Create embed with first result
+                    person = results[0]
+                    embed = discord.Embed(
+                        title=f"📞 {formatted}",
+                        color=discord.Color.blue()
+                    )
+
+                    # Name
+                    full_name = person.get('fullName', 'Unknown')
+                    embed.add_field(name="👤 Name", value=full_name, inline=True)
+
+                    # Age
+                    age = person.get('age')
+                    if age:
+                        embed.add_field(name="🎂 Age", value=str(age), inline=True)
+
+                    # Location
+                    city = person.get('city', '')
+                    state = person.get('state', '')
+                    if city and state:
+                        embed.add_field(name="📍 Location", value=f"{city}, {state}", inline=True)
+
+                    # Current address
+                    current_addr = person.get('currentAddress', {})
+                    if current_addr:
+                        addr_display = current_addr.get('fullAddressDisplay', '')
+                        if addr_display:
+                            embed.add_field(name="🏠 Address", value=addr_display, inline=False)
+
+                    # Associated names (aliases)
+                    assoc_names = person.get('associatedNames', [])
+                    if assoc_names:
+                        aliases = [n.get('fullName', '') for n in assoc_names[:3] if n.get('fullName')]
+                        if aliases:
+                            embed.add_field(name="📝 Also Known As", value=", ".join(aliases), inline=False)
+
+                    # Relatives
+                    relatives = person.get('relatives', [])
+                    if relatives:
+                        rel_names = [r.get('name', '') for r in relatives[:5] if r.get('name')]
+                        if rel_names:
+                            embed.add_field(name="👨‍👩‍👧‍👦 Relatives", value=", ".join(rel_names), inline=False)
+
+                    # Show if there are more results
+                    if len(results) > 1:
+                        embed.set_footer(text=f"Showing 1 of {len(results)} results")
+
+                    await ctx.send(embed=embed)
+
+            except json.JSONDecodeError:
+                await ctx.send(f"Error parsing results for **{formatted}**")
             except Exception as e:
                 await ctx.send(f"Error: {e}")
 
