@@ -820,6 +820,7 @@ async def define(ctx, *, word: str = None):
 
 import html
 import json
+import cloudscraper
 
 
 def format_phone_number(phone: str) -> str:
@@ -837,6 +838,13 @@ def format_phone_number(phone: str) -> str:
     return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
 
 
+def fetch_phone_data(url: str) -> tuple:
+    """Fetch phone data using cloudscraper (runs in executor)"""
+    scraper = cloudscraper.create_scraper()
+    response = scraper.get(url)
+    return response.status_code, response.text
+
+
 @bot.command(name='phone', aliases=['lookup', 'whois'])
 async def phone_lookup(ctx, *, phone: str = None):
     """Look up a phone number. Usage: !phone <number>"""
@@ -849,94 +857,81 @@ async def phone_lookup(ctx, *, phone: str = None):
 
     async with ctx.typing():
         url = f"https://www.usphonebook.com/phone-search/{formatted}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-            'Referer': 'https://www.usphonebook.com/'
-        }
 
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(url, headers=headers, allow_redirects=True) as response:
-                    if response.status != 200:
-                        return await ctx.send(f"Error fetching data: {response.status}")
+        try:
+            # Run cloudscraper in executor (it's synchronous)
+            status_code, text = await bot.loop.run_in_executor(
+                None, fetch_phone_data, url
+            )
 
-                    text = await response.text()
+            if status_code != 200:
+                return await ctx.send(f"Error fetching data: {status_code}")
 
-                    # Find gResults in the page
-                    match = re.search(r"gResults:'(\[.*?\])'", text)
-                    if not match:
-                        return await ctx.send(f"No results found for **{formatted}**")
+            # Find gResults in the page
+            match = re.search(r"gResults:'(\[.*?\])'", text)
+            if not match:
+                return await ctx.send(f"No results found for **{formatted}**")
 
-                    # Decode HTML entities and parse JSON
-                    json_str = html.unescape(match.group(1))
-                    results = json.loads(json_str)
+            # Decode HTML entities and parse JSON
+            json_str = html.unescape(match.group(1))
+            results = json.loads(json_str)
 
-                    if not results:
-                        return await ctx.send(f"No results found for **{formatted}**")
+            if not results:
+                return await ctx.send(f"No results found for **{formatted}**")
 
-                    # Create embed with first result
-                    person = results[0]
-                    embed = discord.Embed(
-                        title=f"📞 {formatted}",
-                        color=discord.Color.blue()
-                    )
+            # Create embed with first result
+            person = results[0]
+            embed = discord.Embed(
+                title=f"📞 {formatted}",
+                color=discord.Color.blue()
+            )
 
-                    # Name
-                    full_name = person.get('fullName', 'Unknown')
-                    embed.add_field(name="👤 Name", value=full_name, inline=True)
+            # Name
+            full_name = person.get('fullName', 'Unknown')
+            embed.add_field(name="👤 Name", value=full_name, inline=True)
 
-                    # Age
-                    age = person.get('age')
-                    if age:
-                        embed.add_field(name="🎂 Age", value=str(age), inline=True)
+            # Age
+            age = person.get('age')
+            if age:
+                embed.add_field(name="🎂 Age", value=str(age), inline=True)
 
-                    # Location
-                    city = person.get('city', '')
-                    state = person.get('state', '')
-                    if city and state:
-                        embed.add_field(name="📍 Location", value=f"{city}, {state}", inline=True)
+            # Location
+            city = person.get('city', '')
+            state = person.get('state', '')
+            if city and state:
+                embed.add_field(name="📍 Location", value=f"{city}, {state}", inline=True)
 
-                    # Current address
-                    current_addr = person.get('currentAddress', {})
-                    if current_addr:
-                        addr_display = current_addr.get('fullAddressDisplay', '')
-                        if addr_display:
-                            embed.add_field(name="🏠 Address", value=addr_display, inline=False)
+            # Current address
+            current_addr = person.get('currentAddress', {})
+            if current_addr:
+                addr_display = current_addr.get('fullAddressDisplay', '')
+                if addr_display:
+                    embed.add_field(name="🏠 Address", value=addr_display, inline=False)
 
-                    # Associated names (aliases)
-                    assoc_names = person.get('associatedNames', [])
-                    if assoc_names:
-                        aliases = [n.get('fullName', '') for n in assoc_names[:3] if n.get('fullName')]
-                        if aliases:
-                            embed.add_field(name="📝 Also Known As", value=", ".join(aliases), inline=False)
+            # Associated names (aliases)
+            assoc_names = person.get('associatedNames', [])
+            if assoc_names:
+                aliases = [n.get('fullName', '') for n in assoc_names[:3] if n.get('fullName')]
+                if aliases:
+                    embed.add_field(name="📝 Also Known As", value=", ".join(aliases), inline=False)
 
-                    # Relatives
-                    relatives = person.get('relatives', [])
-                    if relatives:
-                        rel_names = [r.get('name', '') for r in relatives[:5] if r.get('name')]
-                        if rel_names:
-                            embed.add_field(name="👨‍👩‍👧‍👦 Relatives", value=", ".join(rel_names), inline=False)
+            # Relatives
+            relatives = person.get('relatives', [])
+            if relatives:
+                rel_names = [r.get('name', '') for r in relatives[:5] if r.get('name')]
+                if rel_names:
+                    embed.add_field(name="👨‍👩‍👧‍👦 Relatives", value=", ".join(rel_names), inline=False)
 
-                    # Show if there are more results
-                    if len(results) > 1:
-                        embed.set_footer(text=f"Showing 1 of {len(results)} results")
+            # Show if there are more results
+            if len(results) > 1:
+                embed.set_footer(text=f"Showing 1 of {len(results)} results")
 
-                    await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
 
-            except json.JSONDecodeError:
-                await ctx.send(f"Error parsing results for **{formatted}**")
-            except Exception as e:
-                await ctx.send(f"Error: {e}")
+        except json.JSONDecodeError:
+            await ctx.send(f"Error parsing results for **{formatted}**")
+        except Exception as e:
+            await ctx.send(f"Error: {e}")
 
 
 # ============== Stock Feature (Alpha Vantage) ==============
