@@ -824,7 +824,7 @@ import html
 import json
 import time
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
+from playwright_stealth import Stealth
 
 # Cookie file path for datadome persistence
 COOKIE_FILE = Path(__file__).parent / '.datadome_cookie'
@@ -969,8 +969,13 @@ def fetch_phone_data(url: str) -> dict:
 
             page = context.new_page()
 
-            # Apply stealth patches
-            stealth_sync(page)
+            # Apply stealth patches using new Stealth API
+            stealth = Stealth(
+                navigator_platform_override=fingerprint['platform'],
+                webgl_vendor_override='Google Inc. (NVIDIA)',
+                webgl_renderer_override='ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)'
+            )
+            stealth.apply_stealth_sync(page)
 
             # Load saved datadome cookie if available
             saved_cookie = load_datadome_cookie()
@@ -983,65 +988,19 @@ def fetch_phone_data(url: str) -> dict:
                 }])
                 print(f"Loaded saved datadome cookie")
 
-            # Override navigator properties for extra stealth
-            page.add_init_script(f"""
-                // Override navigator.webdriver
-                Object.defineProperty(navigator, 'webdriver', {{
-                    get: () => undefined
-                }});
-
-                // Override navigator.plugins
-                Object.defineProperty(navigator, 'plugins', {{
-                    get: () => [
-                        {{name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'}},
-                        {{name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''}},
-                        {{name: 'Native Client', filename: 'internal-nacl-plugin', description: ''}}
-                    ]
-                }});
-
-                // Override navigator.languages
-                Object.defineProperty(navigator, 'languages', {{
-                    get: () => ['en-US', 'en']
-                }});
-
-                // Override navigator.platform
-                Object.defineProperty(navigator, 'platform', {{
-                    get: () => '{fingerprint["platform"]}'
-                }});
-
-                // Override navigator.hardwareConcurrency
-                Object.defineProperty(navigator, 'hardwareConcurrency', {{
+            # Additional stealth overrides (Stealth library handles most, but we add extras)
+            page.add_init_script("""
+                // Override navigator.deviceMemory (not covered by stealth lib)
+                Object.defineProperty(navigator, 'deviceMemory', {
                     get: () => 8
-                }});
+                });
 
-                // Override navigator.deviceMemory
-                Object.defineProperty(navigator, 'deviceMemory', {{
-                    get: () => 8
-                }});
-
-                // Spoof WebGL vendor/renderer
-                const getParameterOrig = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function(parameter) {{
-                    if (parameter === 37445) return 'Google Inc. (NVIDIA)';
-                    if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                    return getParameterOrig.call(this, parameter);
-                }};
-
-                // Override permissions query
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({{ state: Notification.permission }}) :
-                        originalQuery(parameters)
-                );
-
-                // Add missing chrome object
-                window.chrome = {{
-                    runtime: {{}},
-                    loadTimes: function() {{}},
-                    csi: function() {{}},
-                    app: {{}}
-                }};
+                // Ensure connection type looks real
+                if (navigator.connection) {
+                    Object.defineProperty(navigator.connection, 'effectiveType', {
+                        get: () => '4g'
+                    });
+                }
             """)
 
             # Human-like behavior: random initial delay
