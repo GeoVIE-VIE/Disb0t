@@ -1227,6 +1227,112 @@ def fetch_phone_data(url: str) -> dict:
         return {'error': str(e)}
 
 
+class CaptchaSolveView(discord.ui.View):
+    """Interactive view for solving CAPTCHA"""
+
+    def __init__(self, phone_number: str, original_ctx):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.phone_number = phone_number
+        self.original_ctx = original_ctx
+        self.cookie_value = None
+
+    @discord.ui.button(label="Open Site", style=discord.ButtonStyle.link, url="https://www.usphonebook.com/")
+    async def open_site(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass  # Link buttons don't need a callback
+
+    @discord.ui.button(label="I Solved It - Paste Cookie", style=discord.ButtonStyle.success, emoji="✅")
+    async def solved_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Create a modal to get the cookie
+        modal = CookieInputModal(self.phone_number, self.original_ctx)
+        await interaction.response.send_modal(modal)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Lookup cancelled.", ephemeral=True)
+        self.stop()
+
+
+class CookieInputModal(discord.ui.Modal, title="Paste DataDome Cookie"):
+    """Modal for entering the datadome cookie"""
+
+    cookie = discord.ui.TextInput(
+        label="DataDome Cookie Value",
+        placeholder="Paste the 'datadome' cookie value here...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=500
+    )
+
+    def __init__(self, phone_number: str, original_ctx):
+        super().__init__()
+        self.phone_number = phone_number
+        self.original_ctx = original_ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Save the cookie
+        cookie_value = self.cookie.value.strip()
+        save_datadome_cookie(cookie_value)
+
+        await interaction.response.send_message(
+            f"Cookie saved! Retrying lookup for **{self.phone_number}**...",
+            ephemeral=True
+        )
+
+        # Retry the lookup
+        url = f"https://www.usphonebook.com/phone-search/{self.phone_number}"
+
+        async with self.original_ctx.typing():
+            data = await bot.loop.run_in_executor(None, fetch_phone_data, url)
+
+            if data.get('captcha_detected'):
+                await self.original_ctx.send("Still getting CAPTCHA. The cookie might be invalid or expired. Try getting a fresh one.")
+                return
+
+            if 'error' in data:
+                await self.original_ctx.send(f"Error: {data['error']}")
+                return
+
+            # Process results
+            if 'raw_json' in data:
+                json_str = html.unescape(data['raw_json'])
+                results = json.loads(json_str)
+                if results:
+                    person = results[0]
+                    data['name'] = person.get('fullName', 'Unknown')
+                    data['age'] = person.get('age')
+                    city = person.get('city', '')
+                    state = person.get('state', '')
+                    if city and state:
+                        data['location'] = f"{city}, {state}"
+                    current_addr = person.get('currentAddress', {})
+                    if current_addr:
+                        data['address'] = current_addr.get('fullAddressDisplay', '')
+                    relatives = person.get('relatives', [])
+                    if relatives:
+                        data['relatives'] = [r.get('name', '') for r in relatives[:5] if r.get('name')]
+
+            if not data.get('name') and not data.get('raw_json'):
+                await self.original_ctx.send(f"No results found for **{self.phone_number}**")
+                return
+
+            # Create embed with results
+            embed = discord.Embed(title=f"📞 {self.phone_number}", color=discord.Color.green())
+
+            if data.get('name'):
+                embed.add_field(name="👤 Name", value=data['name'], inline=True)
+            if data.get('age'):
+                embed.add_field(name="🎂 Age", value=str(data['age']), inline=True)
+            if data.get('location'):
+                embed.add_field(name="📍 Location", value=data['location'], inline=True)
+            if data.get('address'):
+                embed.add_field(name="🏠 Address", value=data['address'], inline=False)
+            if data.get('relatives'):
+                embed.add_field(name="👨‍👩‍👧‍👦 Relatives", value=", ".join(data['relatives']), inline=False)
+
+            await self.original_ctx.send(embed=embed)
+
+
 @bot.command(name='phone', aliases=['lookup', 'whois'])
 async def phone_lookup(ctx, *, phone: str = None):
     """Look up a phone number. Usage: !phone <number>"""
@@ -1251,26 +1357,28 @@ async def phone_lookup(ctx, *, phone: str = None):
 
             # Check if CAPTCHA was detected
             if data.get('captcha_detected'):
+                # Create interactive view for solving CAPTCHA
+                view = CaptchaSolveView(formatted, ctx)
+
                 # Send the screenshot so user can see what's happening
                 screenshot_path = Path('/tmp/phone_debug.png')
+
+                instructions = (
+                    f"**🔒 CAPTCHA detected!** DataDome is blocking the request.\n\n"
+                    f"**To solve:**\n"
+                    f"1. Click **Open Site** to visit usphonebook.com\n"
+                    f"2. Solve the CAPTCHA if shown\n"
+                    f"3. Open DevTools (F12) → Application → Cookies\n"
+                    f"4. Find the `datadome` cookie and copy its value\n"
+                    f"5. Click **I Solved It - Paste Cookie** and enter the value\n\n"
+                    f"_The lookup will retry automatically!_"
+                )
+
                 if screenshot_path.exists():
                     file = discord.File(screenshot_path, filename='captcha.png')
-                    await ctx.send(
-                        f"**CAPTCHA detected!** DataDome is blocking the request.\n\n"
-                        f"**To fix this:**\n"
-                        f"1. Visit https://www.usphonebook.com/ in your browser\n"
-                        f"2. Solve the CAPTCHA if shown\n"
-                        f"3. Open DevTools (F12) → Application → Cookies\n"
-                        f"4. Find the `datadome` cookie and copy its value\n"
-                        f"5. Run: `!phone_cookie <paste_value_here>`\n"
-                        f"6. Try your lookup again!",
-                        file=file
-                    )
+                    await ctx.send(instructions, file=file, view=view)
                 else:
-                    await ctx.send(
-                        f"**CAPTCHA detected!** DataDome is blocking the request.\n\n"
-                        f"To fix: visit usphonebook.com, solve CAPTCHA, get `datadome` cookie, run `!phone_cookie <value>`"
-                    )
+                    await ctx.send(instructions, view=view)
                 return
 
             # Check if we got raw JSON data
