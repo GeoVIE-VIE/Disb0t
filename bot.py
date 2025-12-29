@@ -1234,11 +1234,14 @@ class CaptchaSolveView(discord.ui.View):
         super().__init__(timeout=300)  # 5 minute timeout
         self.phone_number = phone_number
         self.original_ctx = original_ctx
-        self.cookie_value = None
 
-    @discord.ui.button(label="Open Site", style=discord.ButtonStyle.link, url="https://www.usphonebook.com/")
-    async def open_site(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass  # Link buttons don't need a callback
+        # Add link button manually (can't use decorator for link buttons)
+        link_button = discord.ui.Button(
+            label="Open Site",
+            style=discord.ButtonStyle.link,
+            url="https://www.usphonebook.com/"
+        )
+        self.add_item(link_button)
 
     @discord.ui.button(label="I Solved It - Paste Cookie", style=discord.ButtonStyle.success, emoji="✅")
     async def solved_button(self, interaction: discord.Interaction, button: discord.ui.Button):
