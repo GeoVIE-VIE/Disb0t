@@ -872,7 +872,7 @@ def parse_cookie_string(cookie_str: str) -> dict:
 
 # ============== Interactive CAPTCHA Solving ==============
 
-def start_captcha_browser(url: str = "https://www.usphonebook.com/") -> str:
+def start_captcha_browser(url: str = "https://www.usphonebook.com/", headless: bool = True) -> str:
     """Start a browser session for CAPTCHA solving. Returns screenshot path."""
     global _captcha_browser, _captcha_page, _captcha_context, _captcha_playwright
 
@@ -882,9 +882,9 @@ def start_captcha_browser(url: str = "https://www.usphonebook.com/") -> str:
 
         _captcha_playwright = sync_playwright().start()
 
-        # Launch browser (headed mode with Xvfb on headless server)
+        # Launch browser - headless by default, use Xvfb if headless=False
         _captcha_browser = _captcha_playwright.chromium.launch(
-            headless=False,  # Use Xvfb for display
+            headless=headless,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--disable-dev-shm-usage',
@@ -1006,6 +1006,19 @@ def close_captcha_browser():
         close_captcha_browser_internal()
 
 
+def captcha_browser_screenshot() -> str:
+    """Take a fresh screenshot without any action."""
+    global _captcha_page
+
+    if not _captcha_page:
+        return None
+
+    with _browser_lock:
+        screenshot_path = '/tmp/captcha_session.png'
+        _captcha_page.screenshot(path=screenshot_path)
+        return screenshot_path
+
+
 class CaptchaSolverView(discord.ui.View):
     """Interactive view for solving CAPTCHA via Discord"""
 
@@ -1020,26 +1033,23 @@ class CaptchaSolverView(discord.ui.View):
         screenshot_path = Path('/tmp/captcha_session.png')
         if screenshot_path.exists():
             file = discord.File(screenshot_path, filename='captcha.png')
-            content = message or "**CAPTCHA Browser** - Click coordinates or use buttons below"
+            content = message or "**CAPTCHA Browser** - Send `click X Y` coordinates"
             if hasattr(interaction_or_ctx, 'followup'):
                 await interaction_or_ctx.followup.send(content, file=file, view=self)
             else:
                 self.last_message = await interaction_or_ctx.send(content, file=file, view=self)
 
-    @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="📸 Screenshot", style=discord.ButtonStyle.secondary, row=0)
+    async def screenshot_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await bot.loop.run_in_executor(None, captcha_browser_screenshot)
+        await self.send_screenshot(interaction, "Current page state:")
+
+    @discord.ui.button(label="🔄 Refresh Page", style=discord.ButtonStyle.secondary, row=0)
     async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await bot.loop.run_in_executor(None, captcha_browser_refresh)
         await self.send_screenshot(interaction, "Page refreshed!")
-
-    @discord.ui.button(label="🖱️ Click Mode", style=discord.ButtonStyle.primary, row=0)
-    async def click_mode_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.click_mode = True
-        await interaction.response.send_message(
-            "**Click Mode ON** - Send coordinates like `640 360` (center of 1280x720 screen)\n"
-            "Or send `click 640 360` to click at that position.",
-            ephemeral=True
-        )
 
     @discord.ui.button(label="⌨️ Type Text", style=discord.ButtonStyle.primary, row=0)
     async def type_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1460,9 +1470,9 @@ async def phone_solve(ctx):
 
     async with ctx.typing():
         try:
-            # Start browser in executor (blocking)
+            # Start browser in executor (blocking) - headless mode works without Xvfb
             screenshot_path = await bot.loop.run_in_executor(
-                None, start_captcha_browser, "https://www.usphonebook.com/"
+                None, lambda: start_captcha_browser("https://www.usphonebook.com/", headless=True)
             )
 
             if screenshot_path and Path(screenshot_path).exists():
