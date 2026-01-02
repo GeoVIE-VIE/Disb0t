@@ -2349,60 +2349,49 @@ async def aoc(ctx, category: str = None, *, query: str = None):
 
 @bot.command(name='aoc_debug')
 @commands.is_owner()
-async def aoc_debug(ctx):
-    """Debug AOC API response (owner only)"""
+async def aoc_debug(ctx, *, search_term: str = None):
+    """Debug AOC API response (owner only). Usage: !aoc_debug [search term]"""
     global _aoc_cache
 
     # Clear cache first
     _aoc_cache = {'items': None, 'mobs': None, 'abilities': None, 'npcs': None, 'last_fetch': None}
 
-    await ctx.send("Cache cleared. Fetching fresh data from API...")
+    await ctx.send("Cache cleared. Fetching ALL items from API (this may take a moment)...")
 
     async with ctx.typing():
         try:
-            url = "https://api.ashescodex.com/items?page=1"
-            response = await bot.loop.run_in_executor(None, _fetch_aoc_page, url)
+            # Fetch all items using the regular function
+            items = await get_aoc_items()
 
-            info = f"**Status:** {response.status_code}\n"
+            info = f"**Total items fetched:** {len(items)}\n"
 
-            try:
-                data = response.json()
-                info += f"**Response type:** `{type(data).__name__}`\n"
+            if items:
+                # Show some sample item names
+                sample_names = [get_item_name(i) for i in items[:5]]
+                info += f"**Sample items:** {', '.join(sample_names)}\n"
 
-                if isinstance(data, dict):
-                    info += f"**Keys:** `{list(data.keys())[:10]}`\n"
-                    if 'data' in data:
-                        inner = data['data']
-                        info += f"**data type:** `{type(inner).__name__}`\n"
-                        if isinstance(inner, list) and len(inner) > 0:
-                            first = inner[0]
-                            info += f"**First item type:** `{type(first).__name__}`\n"
-                            if isinstance(first, dict):
-                                info += f"**First item keys:** `{list(first.keys())[:8]}`\n"
-                                name_field = first.get('itemName') or first.get('name') or 'NOT FOUND'
-                                info += f"**Name field:** `{name_field[:50]}`\n"
-                            else:
-                                info += f"**First item value:** `{str(first)[:100]}`\n"
-                        elif isinstance(inner, dict):
-                            info += f"**Inner dict keys:** `{list(inner.keys())[:5]}`\n"
-                elif isinstance(data, list):
-                    info += f"**List length:** {len(data)}\n"
-                    if len(data) > 0:
-                        first = data[0]
-                        info += f"**First item type:** `{type(first).__name__}`\n"
-                        if isinstance(first, dict):
-                            info += f"**First item keys:** `{list(first.keys())[:8]}`\n"
-                else:
-                    info += f"**Raw (first 200 chars):** `{str(data)[:200]}`\n"
-
-            except Exception as je:
-                info += f"**JSON parse error:** {je}\n"
-                info += f"**Raw text:** `{response.text[:300]}`\n"
+                # If search term provided, test the search
+                if search_term:
+                    results = search_aoc_items(items, search_term)
+                    info += f"\n**Search for '{search_term}':** {len(results)} results\n"
+                    if results:
+                        for r in results[:5]:
+                            info += f"  - {get_item_name(r)}\n"
+                    else:
+                        # Show items that contain parts of the search
+                        partial = [i for i in items if search_term.lower()[:3] in get_item_name(i).lower()][:5]
+                        if partial:
+                            info += f"**Partial matches ({search_term[:3]}):** "
+                            info += ", ".join([get_item_name(i) for i in partial]) + "\n"
+            else:
+                info += "**No items fetched!**\n"
 
             await ctx.send(info)
 
         except Exception as e:
-            await ctx.send(f"Error: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            await ctx.send(f"Error: {e}\n```\n{tb[-500:]}\n```")
 
 
 @bot.command(name='aoc_item', aliases=['item'])
