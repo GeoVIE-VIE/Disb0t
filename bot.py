@@ -1876,8 +1876,8 @@ def load_aoc_cache():
     return False
 
 
-def save_aoc_cache():
-    """Save AOC data to local JSON file"""
+def _save_aoc_cache_sync():
+    """Synchronous cache save - runs in thread pool"""
     global _aoc_cache
     try:
         with open(AOC_CACHE_FILE, 'w') as f:
@@ -1889,6 +1889,22 @@ def save_aoc_cache():
         return False
 
 
+def save_aoc_cache():
+    """Save AOC cache - schedules async write to avoid blocking"""
+    # Schedule the save in a thread to avoid blocking event loop
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Run in thread pool to avoid blocking
+            loop.run_in_executor(None, _save_aoc_cache_sync)
+        else:
+            # Not in async context, save directly
+            _save_aoc_cache_sync()
+    except RuntimeError:
+        # No event loop, save directly
+        _save_aoc_cache_sync()
+
+
 def get_cached_crafting(slug: str) -> dict:
     """Get cached crafting info for an item slug"""
     global _aoc_cache
@@ -1896,14 +1912,14 @@ def get_cached_crafting(slug: str) -> dict:
 
 
 def save_crafting_to_cache(slug: str, crafting_info: dict, save_to_file: bool = True):
-    """Save crafting info to cache"""
+    """Save crafting info to memory cache (file write is async)"""
     global _aoc_cache
     if 'crafting' not in _aoc_cache:
         _aoc_cache['crafting'] = {}
     if crafting_info:  # Only save if we got actual data
         _aoc_cache['crafting'][slug] = crafting_info
         if save_to_file:
-            save_aoc_cache()
+            save_aoc_cache()  # Now non-blocking
 
 
 def _fetch_aoc_page(url: str):
