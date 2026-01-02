@@ -1957,42 +1957,71 @@ def _scrape_item_sync(item_slug: str) -> dict:
         soup = BeautifulSoup(response.text, 'lxml')
         crafting_info = {}
 
-        # Look for recipe ingredients
-        ingredients = []
-        for elem in soup.find_all(['li', 'tr', 'div']):
-            text = elem.get_text(strip=True)
-            match = re.search(r'(\d+)\s*x\s*(.+)|(.+?)\s*x\s*(\d+)', text, re.IGNORECASE)
-            if match:
-                if match.group(1):
-                    qty, item = match.group(1), match.group(2).strip()
-                else:
-                    item, qty = match.group(3).strip(), match.group(4)
-                if item and len(item) < 50:
-                    ingredients.append({'name': item, 'quantity': int(qty)})
+        # Find "Crafting Recipe" section - it's in an h4 with text starting with "Crafting Recipe"
+        recipe_header = None
+        for h4 in soup.find_all('h4'):
+            if 'Crafting Recipe' in h4.get_text():
+                recipe_header = h4
+                break
 
-        if ingredients:
-            crafting_info['ingredients'] = ingredients[:10]
+        if recipe_header:
+            # Get the parent container that holds ingredients
+            recipe_container = recipe_header.find_parent('div', class_='grid')
+            if not recipe_container:
+                recipe_container = recipe_header.find_parent('div')
 
-        # Look for profession
-        professions = ['blacksmithing', 'armorsmithing', 'weaponsmithing', 'leatherworking',
-                      'tailoring', 'jewelcrafting', 'alchemy', 'cooking', 'carpentry',
-                      'stonemasonry', 'scribing', 'tanning', 'lumbering', 'mining', 'herbalism']
-        for elem in soup.find_all(['span', 'div', 'td']):
-            text = elem.get_text(strip=True).lower()
-            for prof in professions:
-                if prof in text:
-                    crafting_info['profession'] = prof.title()
-                    break
+            if recipe_container:
+                ingredients = []
+                # Find all ingredient links (they link to /db/item/)
+                for link in recipe_container.find_all('a', href=True):
+                    href = link.get('href', '')
+                    if '/db/item/' in href and 'Recipe' not in href:
+                        # Get quantity from span with "absolute bottom-0 right-1"
+                        qty_span = link.find('span', class_=lambda c: c and 'absolute' in c and 'bottom' in c)
+                        qty = 1
+                        if qty_span:
+                            qty_text = qty_span.get_text(strip=True)
+                            if qty_text.isdigit():
+                                qty = int(qty_text)
 
-        # Look for crafting station
+                        # Get item name from the other span
+                        name_span = link.find('span', class_=lambda c: c and 'text-shadow' in c and 'flex' in c)
+                        item_name = ''
+                        if name_span:
+                            item_name = name_span.get_text(strip=True)
+
+                        # Fallback: get from img alt
+                        if not item_name:
+                            img = link.find('img', alt=True)
+                            if img:
+                                item_name = img.get('alt', '')
+
+                        if item_name:
+                            ingredients.append({'name': item_name, 'quantity': qty})
+
+                if ingredients:
+                    crafting_info['ingredients'] = ingredients[:10]
+
+                # Get profession from the recipe header or nearby text
+                header_text = recipe_header.get_text()
+                prof_match = re.search(r'Crafting Recipe:\s*(\w+)', header_text)
+                if prof_match:
+                    crafting_info['profession'] = prof_match.group(1)
+
+                # Also look for "Novice/Apprentice/Journeyman X" skill level
+                skill_div = recipe_container.find('div', class_=lambda c: c and 'rounded-md' in c and 'border' in c)
+                if skill_div:
+                    skill_text = skill_div.get_text(strip=True)
+                    crafting_info['skill'] = skill_text
+
+        # Look for crafting station in page
         stations = ['forge', 'anvil', 'workbench', 'loom', 'tanning rack', 'alchemy station',
-                   'cooking fire', 'kiln', 'sawmill', 'smelter']
-        for elem in soup.find_all(['span', 'div', 'td']):
-            text = elem.get_text(strip=True).lower()
-            for station in stations:
-                if station in text:
-                    crafting_info['station'] = station.title()
-                    break
+                   'cooking fire', 'kiln', 'sawmill', 'smelter', 'smithy']
+        page_text = soup.get_text().lower()
+        for station in stations:
+            if station in page_text:
+                crafting_info['station'] = station.title()
+                break
 
         return crafting_info
 
@@ -2351,6 +2380,9 @@ def format_aoc_item_embed(item: dict, crafting_info: dict = None) -> discord.Emb
         if profession:
             prof_name = str(profession).split('.')[-1].replace('_', ' ').title()
             embed.add_field(name="Profession", value=prof_name, inline=True)
+
+    if crafting_info.get('skill'):
+        embed.add_field(name="Skill Required", value=crafting_info['skill'], inline=True)
 
     if crafting_info.get('station'):
         embed.add_field(name="Station", value=crafting_info['station'], inline=True)
