@@ -1850,6 +1850,19 @@ _aoc_cache = {
 AOC_CACHE_DURATION = 3600  # 1 hour cache
 
 
+def _fetch_aoc_page(url: str):
+    """Synchronous function to fetch a single AOC API page"""
+    return curl_requests.get(
+        url,
+        impersonate="chrome120",
+        timeout=30,
+        headers={
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+    )
+
+
 async def fetch_aoc_data(endpoint: str) -> list:
     """Fetch data from Ashes Codex API using curl_cffi for TLS impersonation"""
 
@@ -1864,15 +1877,8 @@ async def fetch_aoc_data(endpoint: str) -> list:
             # Use curl_cffi with Chrome impersonation (same as phone lookup)
             response = await bot.loop.run_in_executor(
                 None,
-                lambda: curl_requests.get(
-                    url,
-                    impersonate="chrome120",
-                    timeout=30,
-                    headers={
-                        'Accept': 'application/json',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                )
+                _fetch_aoc_page,
+                url
             )
 
             if response.status_code != 200:
