@@ -201,6 +201,14 @@ Timeframes: 1w, 2w, 1m, 3m, 6m, 1y
 """
     embed.add_field(name="📈 Stocks", value=stock_cmds.strip(), inline=False)
 
+    # Ashes of Creation commands
+    aoc_cmds = """
+`!aoc item <name>` / `!item` - Look up items
+`!aoc mob <name>` / `!mob` - Look up mobs
+`!aoc search <query>` - Search all data
+"""
+    embed.add_field(name="⚔️ Ashes of Creation", value=aoc_cmds.strip(), inline=False)
+
     # Utility commands
     util_cmds = """
 `!commands` / `!cmds` - Show this help table
@@ -1827,6 +1835,413 @@ class ChartTimeframeView(discord.ui.View):
             await interaction.message.edit(attachments=[file], view=new_view)
 
         return callback
+
+
+# ============== Ashes of Creation (Ashes Codex) Feature ==============
+
+# Cache for AOC data to avoid repeated API calls
+_aoc_cache = {
+    'items': None,
+    'mobs': None,
+    'abilities': None,
+    'npcs': None,
+    'last_fetch': None
+}
+AOC_CACHE_DURATION = 3600  # 1 hour cache
+
+
+async def fetch_aoc_data(endpoint: str) -> list:
+    """Fetch data from Ashes Codex API using curl_cffi for TLS impersonation"""
+
+    all_data = []
+    page = 1
+    max_pages = 50  # Safety limit
+
+    while page <= max_pages:
+        url = f"https://api.ashescodex.com/{endpoint}?page={page}"
+
+        try:
+            # Use curl_cffi with Chrome impersonation (same as phone lookup)
+            response = await bot.loop.run_in_executor(
+                None,
+                lambda: curl_requests.get(
+                    url,
+                    impersonate="chrome120",
+                    timeout=30,
+                    headers={
+                        'Accept': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                )
+            )
+
+            if response.status_code != 200:
+                break
+
+            data = response.json()
+
+            if not data or len(data) == 0:
+                break
+
+            all_data.extend(data)
+            page += 1
+
+            # If we got less than expected page size, we're done
+            if len(data) < 100:
+                break
+
+        except Exception as e:
+            print(f"Error fetching AOC {endpoint} page {page}: {e}")
+            break
+
+    return all_data
+
+
+async def get_aoc_items() -> list:
+    """Get cached or fresh items data"""
+    global _aoc_cache
+
+    now = time.time()
+    if _aoc_cache['items'] and _aoc_cache['last_fetch']:
+        if now - _aoc_cache['last_fetch'] < AOC_CACHE_DURATION:
+            return _aoc_cache['items']
+
+    items = await fetch_aoc_data('items')
+    if items:
+        _aoc_cache['items'] = items
+        _aoc_cache['last_fetch'] = now
+
+    return items or []
+
+
+async def get_aoc_mobs() -> list:
+    """Get cached or fresh mobs data"""
+    global _aoc_cache
+
+    now = time.time()
+    if _aoc_cache['mobs'] and _aoc_cache['last_fetch']:
+        if now - _aoc_cache['last_fetch'] < AOC_CACHE_DURATION:
+            return _aoc_cache['mobs']
+
+    mobs = await fetch_aoc_data('mobs')
+    if mobs:
+        _aoc_cache['mobs'] = mobs
+
+    return mobs or []
+
+
+def search_aoc_items(items: list, query: str, limit: int = 5) -> list:
+    """Search items by name, return top matches"""
+    query_lower = query.lower()
+
+    # Exact match first
+    exact = [i for i in items if i.get('name', '').lower() == query_lower]
+    if exact:
+        return exact[:limit]
+
+    # Starts with query
+    starts_with = [i for i in items if i.get('name', '').lower().startswith(query_lower)]
+    if starts_with:
+        return starts_with[:limit]
+
+    # Contains query
+    contains = [i for i in items if query_lower in i.get('name', '').lower()]
+    return contains[:limit]
+
+
+def format_aoc_item_embed(item: dict) -> discord.Embed:
+    """Format an AOC item into a Discord embed"""
+    name = item.get('name', 'Unknown Item')
+    description = item.get('description', 'No description available.')
+
+    # Clean HTML from description
+    description = re.sub(r'<[^>]+>', '', description)
+    if len(description) > 500:
+        description = description[:497] + "..."
+
+    # Determine item type and color
+    item_type = item.get('itemType', '')
+    type_tags = item.get('itemTypeTags', [])
+
+    # Color based on rarity if available
+    rarity = item.get('rarity', '').lower()
+    color_map = {
+        'legendary': discord.Color.gold(),
+        'epic': discord.Color.purple(),
+        'rare': discord.Color.blue(),
+        'uncommon': discord.Color.green(),
+        'common': discord.Color.light_grey()
+    }
+    color = color_map.get(rarity, discord.Color.blue())
+
+    embed = discord.Embed(
+        title=f"⚔️ {name}",
+        description=description,
+        color=color
+    )
+
+    # Item type
+    if item_type or type_tags:
+        type_str = item_type or ', '.join(type_tags[:3])
+        embed.add_field(name="Type", value=type_str, inline=True)
+
+    # Level requirement
+    level = item.get('levelRequirement') or item.get('level')
+    if level:
+        embed.add_field(name="Level", value=str(level), inline=True)
+
+    # Rarity
+    if rarity:
+        embed.add_field(name="Rarity", value=rarity.capitalize(), inline=True)
+
+    # Stats
+    stats = item.get('stats', {})
+    if stats:
+        stat_lines = []
+        for stat_name, stat_value in list(stats.items())[:6]:
+            # Clean up stat name
+            clean_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', stat_name).title()
+            stat_lines.append(f"• {clean_name}: {stat_value}")
+        if stat_lines:
+            embed.add_field(name="Stats", value="\n".join(stat_lines), inline=False)
+
+    # Crafting info
+    profession = item.get('craftingProfession') or item.get('profession')
+    if profession:
+        embed.add_field(name="Crafting", value=profession, inline=True)
+
+    # Set icon URL if available
+    icon = item.get('displayIcon') or item.get('icon')
+    if icon and icon.startswith('http'):
+        embed.set_thumbnail(url=icon)
+
+    embed.set_footer(text="Ashes of Creation | ashescodex.com")
+
+    return embed
+
+
+def format_aoc_mob_embed(mob: dict) -> discord.Embed:
+    """Format an AOC mob into a Discord embed"""
+    name = mob.get('name', 'Unknown Creature')
+    description = mob.get('description', 'No description available.')
+
+    # Clean HTML
+    description = re.sub(r'<[^>]+>', '', description)
+    if len(description) > 500:
+        description = description[:497] + "..."
+
+    embed = discord.Embed(
+        title=f"👹 {name}",
+        description=description,
+        color=discord.Color.red()
+    )
+
+    # Level
+    level = mob.get('level') or mob.get('levelRange')
+    if level:
+        embed.add_field(name="Level", value=str(level), inline=True)
+
+    # Mob type
+    mob_type = mob.get('type') or mob.get('creatureType')
+    if mob_type:
+        embed.add_field(name="Type", value=mob_type, inline=True)
+
+    # Location
+    location = mob.get('location') or mob.get('zone')
+    if location:
+        embed.add_field(name="Location", value=location, inline=True)
+
+    # Health if available
+    health = mob.get('health') or mob.get('hp')
+    if health:
+        embed.add_field(name="Health", value=f"{health:,}" if isinstance(health, int) else str(health), inline=True)
+
+    # Drops
+    drops = mob.get('drops', [])
+    if drops and isinstance(drops, list):
+        drop_names = [d.get('name', str(d)) if isinstance(d, dict) else str(d) for d in drops[:5]]
+        if drop_names:
+            embed.add_field(name="Drops", value=", ".join(drop_names), inline=False)
+
+    embed.set_footer(text="Ashes of Creation | ashescodex.com")
+
+    return embed
+
+
+class AocSearchView(discord.ui.View):
+    """View with buttons to select from multiple search results"""
+
+    def __init__(self, results: list, result_type: str):
+        super().__init__(timeout=120)
+        self.results = results
+        self.result_type = result_type
+
+        # Add a button for each result (max 5)
+        for i, item in enumerate(results[:5]):
+            name = item.get('name', f'Result {i+1}')
+            if len(name) > 50:
+                name = name[:47] + "..."
+
+            button = discord.ui.Button(
+                label=f"{i+1}. {name}",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"aoc_select_{i}",
+                row=i // 3
+            )
+            button.callback = self.make_callback(i)
+            self.add_item(button)
+
+    def make_callback(self, index: int):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.defer()
+
+            item = self.results[index]
+            if self.result_type == 'item':
+                embed = format_aoc_item_embed(item)
+            else:
+                embed = format_aoc_mob_embed(item)
+
+            await interaction.followup.send(embed=embed)
+            self.stop()
+
+        return callback
+
+
+@bot.command(name='aoc')
+async def aoc(ctx, category: str = None, *, query: str = None):
+    """Look up Ashes of Creation data. Usage: !aoc <item|mob|search> <name>
+
+    Examples:
+    !aoc item sword
+    !aoc mob wolf
+    !aoc search health potion
+    """
+    if not category:
+        embed = discord.Embed(
+            title="⚔️ Ashes of Creation Lookup",
+            description="Look up items, mobs, and more from Ashes of Creation!",
+            color=discord.Color.orange()
+        )
+        embed.add_field(
+            name="Commands",
+            value=(
+                "`!aoc item <name>` - Search for items\n"
+                "`!aoc mob <name>` - Search for mobs/creatures\n"
+                "`!aoc search <query>` - Search all categories"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="Examples",
+            value=(
+                "`!aoc item sword`\n"
+                "`!aoc mob wolf`\n"
+                "`!aoc search healing potion`"
+            ),
+            inline=False
+        )
+        embed.set_footer(text="Data from ashescodex.com")
+        return await ctx.send(embed=embed)
+
+    category = category.lower()
+
+    if category not in ['item', 'items', 'mob', 'mobs', 'creature', 'search']:
+        return await ctx.send("Invalid category! Use: `item`, `mob`, or `search`")
+
+    if not query:
+        return await ctx.send(f"Usage: `!aoc {category} <name>`")
+
+    async with ctx.typing():
+        try:
+            if category in ['item', 'items', 'search']:
+                items = await get_aoc_items()
+
+                if not items:
+                    return await ctx.send("Could not fetch item data. The API may be unavailable.")
+
+                results = search_aoc_items(items, query)
+
+                if not results:
+                    return await ctx.send(f"No items found matching **{query}**")
+
+                if len(results) == 1:
+                    embed = format_aoc_item_embed(results[0])
+                    await ctx.send(embed=embed)
+                else:
+                    # Multiple results - show selection
+                    embed = discord.Embed(
+                        title=f"🔍 Found {len(results)} items matching '{query}'",
+                        description="Select an item to view details:",
+                        color=discord.Color.blue()
+                    )
+
+                    for i, item in enumerate(results[:5]):
+                        name = item.get('name', 'Unknown')
+                        item_type = item.get('itemType', 'Item')
+                        rarity = item.get('rarity', '')
+                        embed.add_field(
+                            name=f"{i+1}. {name}",
+                            value=f"{item_type} {f'({rarity})' if rarity else ''}",
+                            inline=False
+                        )
+
+                    view = AocSearchView(results, 'item')
+                    await ctx.send(embed=embed, view=view)
+
+            elif category in ['mob', 'mobs', 'creature']:
+                mobs = await get_aoc_mobs()
+
+                if not mobs:
+                    return await ctx.send("Could not fetch mob data. The API may be unavailable.")
+
+                # Search mobs
+                query_lower = query.lower()
+                results = [m for m in mobs if query_lower in m.get('name', '').lower()][:5]
+
+                if not results:
+                    return await ctx.send(f"No mobs found matching **{query}**")
+
+                if len(results) == 1:
+                    embed = format_aoc_mob_embed(results[0])
+                    await ctx.send(embed=embed)
+                else:
+                    embed = discord.Embed(
+                        title=f"🔍 Found {len(results)} mobs matching '{query}'",
+                        description="Select a mob to view details:",
+                        color=discord.Color.red()
+                    )
+
+                    for i, mob in enumerate(results[:5]):
+                        name = mob.get('name', 'Unknown')
+                        level = mob.get('level', '?')
+                        mob_type = mob.get('type', 'Creature')
+                        embed.add_field(
+                            name=f"{i+1}. {name}",
+                            value=f"Level {level} {mob_type}",
+                            inline=False
+                        )
+
+                    view = AocSearchView(results, 'mob')
+                    await ctx.send(embed=embed, view=view)
+
+        except Exception as e:
+            await ctx.send(f"Error searching: {e}")
+
+
+@bot.command(name='aoc_item', aliases=['item'])
+async def aoc_item(ctx, *, query: str = None):
+    """Shortcut for !aoc item <name>"""
+    if not query:
+        return await ctx.send("Usage: `!item <name>` (e.g. `!item sword`)")
+    await aoc(ctx, 'item', query=query)
+
+
+@bot.command(name='aoc_mob', aliases=['mob', 'creature'])
+async def aoc_mob(ctx, *, query: str = None):
+    """Shortcut for !aoc mob <name>"""
+    if not query:
+        return await ctx.send("Usage: `!mob <name>` (e.g. `!mob wolf`)")
+    await aoc(ctx, 'mob', query=query)
 
 
 @bot.command(name='chart', aliases=['c'])
