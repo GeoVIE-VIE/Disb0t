@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import pandas as pd
+from bs4 import BeautifulSoup
 
 # Load .env from the same directory as this script
 env_path = Path(__file__).parent / '.env'
@@ -1897,6 +1898,101 @@ def _fetch_aoc_page(url: str):
     )
 
 
+def _fetch_aoc_webpage(url: str):
+    """Fetch a webpage from ashescodex.com using curl_cffi"""
+    return curl_requests.get(
+        url,
+        impersonate="chrome120",
+        timeout=30,
+        headers={
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+    )
+
+
+async def scrape_item_crafting(item_slug: str) -> dict:
+    """Scrape crafting recipe info from ashescodex.com item page"""
+    if not item_slug:
+        return {}
+
+    url = f"https://ashescodex.com/item/{item_slug}"
+
+    try:
+        response = await bot.loop.run_in_executor(None, _fetch_aoc_webpage, url)
+
+        if response.status_code != 200:
+            print(f"Failed to fetch {url}: status {response.status_code}")
+            return {}
+
+        soup = BeautifulSoup(response.text, 'lxml')
+        crafting_info = {}
+
+        # Look for crafting/recipe sections - common patterns
+        # Try to find "Crafted By" or "Recipe" sections
+
+        # Look for recipe ingredients in tables or lists
+        recipe_section = soup.find(['div', 'section'], class_=lambda c: c and ('recipe' in c.lower() or 'craft' in c.lower() if c else False))
+
+        if not recipe_section:
+            # Try finding by text content
+            for heading in soup.find_all(['h2', 'h3', 'h4', 'span', 'div']):
+                text = heading.get_text().lower()
+                if 'recipe' in text or 'craft' in text or 'ingredient' in text:
+                    recipe_section = heading.parent
+                    break
+
+        # Try to find ingredients list
+        ingredients = []
+
+        # Look for common ingredient patterns in the page
+        # Usually formatted as "Item Name x Quantity" or in a table
+        for elem in soup.find_all(['li', 'tr', 'div']):
+            text = elem.get_text(strip=True)
+            # Look for patterns like "Iron Ore x5" or "5x Iron Ore"
+            match = re.search(r'(\d+)\s*x\s*(.+)|(.+?)\s*x\s*(\d+)', text, re.IGNORECASE)
+            if match:
+                if match.group(1):  # "5x Iron Ore" format
+                    qty = match.group(1)
+                    item = match.group(2).strip()
+                else:  # "Iron Ore x5" format
+                    item = match.group(3).strip()
+                    qty = match.group(4)
+                if item and len(item) < 50:  # Sanity check
+                    ingredients.append({'name': item, 'quantity': int(qty)})
+
+        if ingredients:
+            crafting_info['ingredients'] = ingredients[:10]  # Limit to 10
+
+        # Look for profession info
+        for elem in soup.find_all(['span', 'div', 'td']):
+            text = elem.get_text(strip=True).lower()
+            professions = ['blacksmithing', 'armorsmithing', 'weaponsmithing', 'leatherworking',
+                          'tailoring', 'jewelcrafting', 'alchemy', 'cooking', 'carpentry',
+                          'stonemasonry', 'scribing', 'tanning', 'lumbering', 'mining', 'herbalism']
+            for prof in professions:
+                if prof in text:
+                    crafting_info['profession'] = prof.title()
+                    break
+
+        # Look for crafting station
+        stations = ['forge', 'anvil', 'workbench', 'loom', 'tanning rack', 'alchemy station',
+                   'cooking fire', 'kiln', 'sawmill', 'smelter']
+        for elem in soup.find_all(['span', 'div', 'td']):
+            text = elem.get_text(strip=True).lower()
+            for station in stations:
+                if station in text:
+                    crafting_info['station'] = station.title()
+                    break
+
+        return crafting_info
+
+    except Exception as e:
+        print(f"Error scraping {url}: {e}")
+        return {}
+
+
 async def fetch_aoc_data(endpoint: str) -> list:
     """Fetch data from Ashes Codex API using curl_cffi for TLS impersonation"""
 
@@ -2043,10 +2139,13 @@ def search_aoc_items(items: list, query: str, limit: int = 5) -> list:
     return contains[:limit]
 
 
-def format_aoc_item_embed(item: dict) -> discord.Embed:
+def format_aoc_item_embed(item: dict, crafting_info: dict = None) -> discord.Embed:
     """Format an AOC item into a Discord embed"""
     if not isinstance(item, dict):
         return discord.Embed(title="Error", description="Invalid item data", color=discord.Color.red())
+
+    if crafting_info is None:
+        crafting_info = {}
 
     # Get name from various possible fields
     name = get_item_name(item)
@@ -2108,11 +2207,25 @@ def format_aoc_item_embed(item: dict) -> discord.Embed:
         slots = [str(s).split('.')[-1].replace('_', ' ').title() for s in equip_slots[:3]]
         embed.add_field(name="Slot", value=', '.join(slots), inline=True)
 
-    # Crafting info
-    profession = item.get('professionTag') or item.get('requiredProfessionId')
-    if profession:
-        prof_name = str(profession).split('.')[-1].replace('_', ' ').title()
-        embed.add_field(name="Crafting", value=prof_name, inline=True)
+    # Crafting info - prefer scraped data if available
+    if crafting_info.get('ingredients'):
+        ingredients_list = crafting_info['ingredients']
+        ingredients_text = '\n'.join([f"• {ing['name']} x{ing['quantity']}" for ing in ingredients_list])
+        if len(ingredients_text) > 1000:
+            ingredients_text = ingredients_text[:997] + "..."
+        embed.add_field(name="Recipe Ingredients", value=ingredients_text, inline=False)
+
+    if crafting_info.get('profession'):
+        embed.add_field(name="Profession", value=crafting_info['profession'], inline=True)
+    else:
+        # Fall back to API data
+        profession = item.get('professionTag') or item.get('requiredProfessionId')
+        if profession:
+            prof_name = str(profession).split('.')[-1].replace('_', ' ').title()
+            embed.add_field(name="Profession", value=prof_name, inline=True)
+
+    if crafting_info.get('station'):
+        embed.add_field(name="Station", value=crafting_info['station'], inline=True)
 
     # Dropped by - format nicely
     dropped_by = item.get('_droppedBy', [])
@@ -2252,7 +2365,9 @@ class AocSearchView(discord.ui.View):
 
             item = self.results[index]
             if self.result_type == 'item':
-                embed = format_aoc_item_embed(item)
+                slug = item.get('_slug') or item.get('slug', '')
+                crafting_info = await scrape_item_crafting(slug) if slug else {}
+                embed = format_aoc_item_embed(item, crafting_info)
             else:
                 embed = format_aoc_mob_embed(item)
 
@@ -2323,7 +2438,10 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                 print(f"Found {len(results)} results, first result type: {type(results[0]).__name__ if results else 'N/A'}")
 
                 if len(results) == 1:
-                    embed = format_aoc_item_embed(results[0])
+                    item = results[0]
+                    slug = item.get('_slug') or item.get('slug', '')
+                    crafting_info = await scrape_item_crafting(slug) if slug else {}
+                    embed = format_aoc_item_embed(item, crafting_info)
                     await ctx.send(embed=embed)
                 else:
                     # Multiple results - show selection
