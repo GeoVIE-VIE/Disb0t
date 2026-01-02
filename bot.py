@@ -2340,7 +2340,69 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     await ctx.send(embed=embed, view=view)
 
         except Exception as e:
-            await ctx.send(f"Error searching: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            print(f"AOC ERROR:\n{tb}")
+            # Show last part of traceback in Discord
+            await ctx.send(f"Error searching: `{e}`\n```py\n{tb[-800:]}\n```")
+
+
+@bot.command(name='aoc_debug')
+@commands.is_owner()
+async def aoc_debug(ctx):
+    """Debug AOC API response (owner only)"""
+    global _aoc_cache
+
+    # Clear cache first
+    _aoc_cache = {'items': None, 'mobs': None, 'abilities': None, 'npcs': None, 'last_fetch': None}
+
+    await ctx.send("Cache cleared. Fetching fresh data from API...")
+
+    async with ctx.typing():
+        try:
+            url = "https://api.ashescodex.com/items?page=1"
+            response = await bot.loop.run_in_executor(None, _fetch_aoc_page, url)
+
+            info = f"**Status:** {response.status_code}\n"
+
+            try:
+                data = response.json()
+                info += f"**Response type:** `{type(data).__name__}`\n"
+
+                if isinstance(data, dict):
+                    info += f"**Keys:** `{list(data.keys())[:10]}`\n"
+                    if 'data' in data:
+                        inner = data['data']
+                        info += f"**data type:** `{type(inner).__name__}`\n"
+                        if isinstance(inner, list) and len(inner) > 0:
+                            first = inner[0]
+                            info += f"**First item type:** `{type(first).__name__}`\n"
+                            if isinstance(first, dict):
+                                info += f"**First item keys:** `{list(first.keys())[:8]}`\n"
+                                name_field = first.get('itemName') or first.get('name') or 'NOT FOUND'
+                                info += f"**Name field:** `{name_field[:50]}`\n"
+                            else:
+                                info += f"**First item value:** `{str(first)[:100]}`\n"
+                        elif isinstance(inner, dict):
+                            info += f"**Inner dict keys:** `{list(inner.keys())[:5]}`\n"
+                elif isinstance(data, list):
+                    info += f"**List length:** {len(data)}\n"
+                    if len(data) > 0:
+                        first = data[0]
+                        info += f"**First item type:** `{type(first).__name__}`\n"
+                        if isinstance(first, dict):
+                            info += f"**First item keys:** `{list(first.keys())[:8]}`\n"
+                else:
+                    info += f"**Raw (first 200 chars):** `{str(data)[:200]}`\n"
+
+            except Exception as je:
+                info += f"**JSON parse error:** {je}\n"
+                info += f"**Raw text:** `{response.text[:300]}`\n"
+
+            await ctx.send(info)
+
+        except Exception as e:
+            await ctx.send(f"Error: {e}")
 
 
 @bot.command(name='aoc_item', aliases=['item'])
