@@ -1882,22 +1882,39 @@ async def fetch_aoc_data(endpoint: str) -> list:
             )
 
             if response.status_code != 200:
+                print(f"AOC API returned status {response.status_code} for {endpoint}")
                 break
 
             data = response.json()
 
-            # Handle nested data structure - API returns {"data": [...]}
-            if isinstance(data, dict) and 'data' in data:
-                data = data['data']
+            # Debug: log the structure we're getting
+            print(f"AOC API {endpoint} page {page}: type={type(data).__name__}")
+            if isinstance(data, dict):
+                print(f"  Keys: {list(data.keys())[:5]}")
+                # Handle nested data structure - API returns {"data": [...]}
+                if 'data' in data:
+                    data = data['data']
+                    print(f"  Extracted 'data' key: type={type(data).__name__}, len={len(data) if isinstance(data, list) else 'N/A'}")
+
+            if isinstance(data, list) and len(data) > 0:
+                first_item = data[0]
+                print(f"  First item type: {type(first_item).__name__}")
+                if isinstance(first_item, dict):
+                    print(f"  First item keys: {list(first_item.keys())[:5]}")
 
             if not data or len(data) == 0:
                 break
 
-            # Ensure we have a list
+            # Ensure we have a list of dicts
             if not isinstance(data, list):
+                print(f"  Warning: data is not a list, skipping")
                 break
 
-            all_data.extend(data)
+            # Filter to only include dict items
+            valid_items = [item for item in data if isinstance(item, dict)]
+            print(f"  Valid dict items: {len(valid_items)} out of {len(data)}")
+
+            all_data.extend(valid_items)
             page += 1
 
             # If we got less than expected page size, we're done
@@ -1906,8 +1923,11 @@ async def fetch_aoc_data(endpoint: str) -> list:
 
         except Exception as e:
             print(f"Error fetching AOC {endpoint} page {page}: {e}")
+            import traceback
+            traceback.print_exc()
             break
 
+    print(f"AOC API {endpoint}: total items fetched = {len(all_data)}")
     return all_data
 
 
@@ -2236,10 +2256,16 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                 if not items:
                     return await ctx.send("Could not fetch item data. The API may be unavailable.")
 
+                # Debug: check what we got
+                print(f"Got {len(items)} items, first item type: {type(items[0]).__name__ if items else 'N/A'}")
+
                 results = search_aoc_items(items, query)
 
                 if not results:
                     return await ctx.send(f"No items found matching **{query}**")
+
+                # Debug: check results
+                print(f"Found {len(results)} results, first result type: {type(results[0]).__name__ if results else 'N/A'}")
 
                 if len(results) == 1:
                     embed = format_aoc_item_embed(results[0])
@@ -2253,15 +2279,23 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     )
 
                     for i, item in enumerate(results[:5]):
-                        name = get_item_name(item)
-                        type_tags = item.get('itemTypeTags', [])
-                        type_str = type_tags[0].split('.')[-1].replace('_', ' ').title() if type_tags else 'Item'
-                        grade = item.get('grade', '') or item.get('rarity', '')
-                        embed.add_field(
-                            name=f"{i+1}. {name}",
-                            value=f"{type_str} {f'({grade})' if grade else ''}",
-                            inline=False
-                        )
+                        try:
+                            name = get_item_name(item)
+                            type_tags = item.get('itemTypeTags', []) if isinstance(item, dict) else []
+                            if type_tags and isinstance(type_tags, list) and len(type_tags) > 0:
+                                first_tag = type_tags[0]
+                                type_str = str(first_tag).split('.')[-1].replace('_', ' ').title() if isinstance(first_tag, str) else 'Item'
+                            else:
+                                type_str = 'Item'
+                            grade = (item.get('grade', '') or item.get('rarity', '')) if isinstance(item, dict) else ''
+                            embed.add_field(
+                                name=f"{i+1}. {name}",
+                                value=f"{type_str} {f'({grade})' if grade else ''}",
+                                inline=False
+                            )
+                        except Exception as item_err:
+                            print(f"Error processing item {i}: {item_err}, item type: {type(item)}")
+                            embed.add_field(name=f"{i+1}. Item", value="Error loading", inline=False)
 
                     view = AocSearchView(results, 'item')
                     await ctx.send(embed=embed, view=view)
