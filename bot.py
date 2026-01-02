@@ -1877,7 +1877,8 @@ async def fetch_aoc_data(endpoint: str) -> list:
 
     all_data = []
     page = 1
-    max_pages = 50  # Safety limit
+    max_pages = 200  # Safety limit
+    total_pages = None
 
     while page <= max_pages:
         url = f"https://api.ashescodex.com/{endpoint}?page={page}"
@@ -1891,24 +1892,47 @@ async def fetch_aoc_data(endpoint: str) -> list:
             )
 
             if response.status_code != 200:
+                print(f"AOC API returned status {response.status_code} for {endpoint}")
                 break
 
-            data = response.json()
+            response_data = response.json()
 
-            if not data or len(data) == 0:
+            # Check for meta pagination info
+            if isinstance(response_data, dict):
+                meta = response_data.get('meta', {})
+                if meta and total_pages is None:
+                    total_pages = meta.get('totalPages') or meta.get('last_page') or meta.get('pages')
+                    print(f"AOC API {endpoint}: total_pages from meta = {total_pages}")
+
+                # Extract the data array
+                data = response_data.get('data', [])
+            else:
+                data = response_data
+
+            print(f"AOC API {endpoint} page {page}/{total_pages or '?'}: got {len(data) if isinstance(data, list) else 0} items")
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                print(f"  No more data, stopping")
                 break
 
-            all_data.extend(data)
+            # Filter to only include dict items
+            valid_items = [item for item in data if isinstance(item, dict)]
+            all_data.extend(valid_items)
+
+            # Check if we've fetched all pages
+            if total_pages and page >= total_pages:
+                print(f"  Reached last page ({total_pages})")
+                break
+
             page += 1
-
-            # If we got less than expected page size, we're done
-            if len(data) < 100:
-                break
 
         except Exception as e:
             print(f"Error fetching AOC {endpoint} page {page}: {e}")
+            import traceback
+            traceback.print_exc()
             break
 
+    print(f"AOC API {endpoint}: total items fetched = {len(all_data)}")
     return all_data
 
 
@@ -1945,41 +1969,61 @@ async def get_aoc_mobs() -> list:
     return mobs or []
 
 
+def get_item_name(item: dict) -> str:
+    """Get item name from various possible field names"""
+    if not isinstance(item, dict):
+        return str(item)
+    return item.get('itemName') or item.get('name') or item.get('displayName', 'Unknown')
+
+
 def search_aoc_items(items: list, query: str, limit: int = 5) -> list:
     """Search items by name, return top matches"""
     query_lower = query.lower()
 
+    # Filter to only dict items
+    valid_items = [i for i in items if isinstance(i, dict)]
+
     # Exact match first
-    exact = [i for i in items if i.get('name', '').lower() == query_lower]
+    exact = [i for i in valid_items if get_item_name(i).lower() == query_lower]
     if exact:
         return exact[:limit]
 
     # Starts with query
-    starts_with = [i for i in items if i.get('name', '').lower().startswith(query_lower)]
+    starts_with = [i for i in valid_items if get_item_name(i).lower().startswith(query_lower)]
     if starts_with:
         return starts_with[:limit]
 
     # Contains query
-    contains = [i for i in items if query_lower in i.get('name', '').lower()]
+    contains = [i for i in valid_items if query_lower in get_item_name(i).lower()]
     return contains[:limit]
 
 
 def format_aoc_item_embed(item: dict) -> discord.Embed:
     """Format an AOC item into a Discord embed"""
-    name = item.get('name', 'Unknown Item')
+    if not isinstance(item, dict):
+        return discord.Embed(title="Error", description="Invalid item data", color=discord.Color.red())
+
+    # Get name from various possible fields
+    name = get_item_name(item)
     description = item.get('description', 'No description available.')
 
     # Clean HTML from description
-    description = re.sub(r'<[^>]+>', '', description)
-    if len(description) > 500:
-        description = description[:497] + "..."
+    if description:
+        description = re.sub(r'<[^>]+>', '', str(description))
+        if len(description) > 500:
+            description = description[:497] + "..."
+    else:
+        description = "No description available."
 
-    # Determine item type and color
-    item_type = item.get('itemType', '')
+    # Determine item type from tags
     type_tags = item.get('itemTypeTags', [])
+    if isinstance(type_tags, list):
+        type_tags = [str(t) for t in type_tags]
+    else:
+        type_tags = []
 
-    # Color based on rarity if available
-    rarity = item.get('rarity', '').lower()
+    # Color based on grade/rarity
+    grade = str(item.get('grade', '') or item.get('rarity', '')).lower()
     color_map = {
         'legendary': discord.Color.gold(),
         'epic': discord.Color.purple(),
@@ -1987,7 +2031,7 @@ def format_aoc_item_embed(item: dict) -> discord.Embed:
         'uncommon': discord.Color.green(),
         'common': discord.Color.light_grey()
     }
-    color = color_map.get(rarity, discord.Color.blue())
+    color = color_map.get(grade, discord.Color.blue())
 
     embed = discord.Embed(
         title=f"⚔️ {name}",
@@ -1995,55 +2039,81 @@ def format_aoc_item_embed(item: dict) -> discord.Embed:
         color=color
     )
 
-    # Item type
-    if item_type or type_tags:
-        type_str = item_type or ', '.join(type_tags[:3])
-        embed.add_field(name="Type", value=type_str, inline=True)
+    # Item type from tags
+    if type_tags:
+        # Clean up tag names (remove prefixes like "ItemType.")
+        clean_tags = [t.split('.')[-1].replace('_', ' ').title() for t in type_tags[:3]]
+        embed.add_field(name="Type", value=', '.join(clean_tags), inline=True)
 
     # Level requirement
-    level = item.get('levelRequirement') or item.get('level')
+    level = item.get('level') or item.get('levelRequirement')
     if level:
         embed.add_field(name="Level", value=str(level), inline=True)
 
-    # Rarity
-    if rarity:
-        embed.add_field(name="Rarity", value=rarity.capitalize(), inline=True)
+    # Grade/Rarity
+    if grade:
+        embed.add_field(name="Rarity", value=grade.capitalize(), inline=True)
 
-    # Stats
-    stats = item.get('stats', {})
-    if stats:
+    # Equipment slots
+    equip_slots = item.get('equipSlots', [])
+    if equip_slots and isinstance(equip_slots, list):
+        slots = [str(s).split('.')[-1].replace('_', ' ').title() for s in equip_slots[:3]]
+        embed.add_field(name="Slot", value=', '.join(slots), inline=True)
+
+    # Stats from statBlock if available
+    stat_block = item.get('statBlock', {})
+    if stat_block and isinstance(stat_block, dict):
         stat_lines = []
-        for stat_name, stat_value in list(stats.items())[:6]:
-            # Clean up stat name
-            clean_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', stat_name).title()
-            stat_lines.append(f"• {clean_name}: {stat_value}")
+        for stat_name, stat_data in list(stat_block.items())[:6]:
+            clean_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', str(stat_name)).title()
+            if isinstance(stat_data, dict):
+                # May have min/max values
+                val = stat_data.get('value') or stat_data.get('min', '?')
+            else:
+                val = stat_data
+            stat_lines.append(f"• {clean_name}: {val}")
         if stat_lines:
             embed.add_field(name="Stats", value="\n".join(stat_lines), inline=False)
 
     # Crafting info
-    profession = item.get('craftingProfession') or item.get('profession')
+    profession = item.get('professionTag') or item.get('requiredProfessionId')
     if profession:
-        embed.add_field(name="Crafting", value=profession, inline=True)
+        prof_name = str(profession).split('.')[-1].replace('_', ' ').title()
+        embed.add_field(name="Crafting", value=prof_name, inline=True)
 
-    # Set icon URL if available
-    icon = item.get('displayIcon') or item.get('icon')
-    if icon and icon.startswith('http'):
-        embed.set_thumbnail(url=icon)
+    # Dropped by
+    dropped_by = item.get('_droppedBy', [])
+    if dropped_by and isinstance(dropped_by, list) and len(dropped_by) > 0:
+        drop_names = [str(d.get('name', d) if isinstance(d, dict) else d) for d in dropped_by[:3]]
+        embed.add_field(name="Dropped By", value=', '.join(drop_names), inline=False)
 
     embed.set_footer(text="Ashes of Creation | ashescodex.com")
 
     return embed
 
 
+def get_mob_name(mob: dict) -> str:
+    """Get mob name from various possible field names"""
+    if not isinstance(mob, dict):
+        return str(mob)
+    return mob.get('name') or mob.get('mobName') or mob.get('displayName', 'Unknown Creature')
+
+
 def format_aoc_mob_embed(mob: dict) -> discord.Embed:
     """Format an AOC mob into a Discord embed"""
-    name = mob.get('name', 'Unknown Creature')
+    if not isinstance(mob, dict):
+        return discord.Embed(title="Error", description="Invalid mob data", color=discord.Color.red())
+
+    name = get_mob_name(mob)
     description = mob.get('description', 'No description available.')
 
     # Clean HTML
-    description = re.sub(r'<[^>]+>', '', description)
-    if len(description) > 500:
-        description = description[:497] + "..."
+    if description:
+        description = re.sub(r'<[^>]+>', '', str(description))
+        if len(description) > 500:
+            description = description[:497] + "..."
+    else:
+        description = "No description available."
 
     embed = discord.Embed(
         title=f"👹 {name}",
@@ -2052,29 +2122,42 @@ def format_aoc_mob_embed(mob: dict) -> discord.Embed:
     )
 
     # Level
-    level = mob.get('level') or mob.get('levelRange')
+    level = mob.get('level') or mob.get('levelRange') or mob.get('minLevel')
     if level:
-        embed.add_field(name="Level", value=str(level), inline=True)
+        max_level = mob.get('maxLevel')
+        if max_level and max_level != level:
+            embed.add_field(name="Level", value=f"{level}-{max_level}", inline=True)
+        else:
+            embed.add_field(name="Level", value=str(level), inline=True)
 
     # Mob type
-    mob_type = mob.get('type') or mob.get('creatureType')
+    mob_type = mob.get('type') or mob.get('creatureType') or mob.get('category')
     if mob_type:
-        embed.add_field(name="Type", value=mob_type, inline=True)
+        type_str = str(mob_type).split('.')[-1].replace('_', ' ').title()
+        embed.add_field(name="Type", value=type_str, inline=True)
 
-    # Location
-    location = mob.get('location') or mob.get('zone')
+    # Location/Zone
+    location = mob.get('location') or mob.get('zone') or mob.get('area')
     if location:
-        embed.add_field(name="Location", value=location, inline=True)
+        embed.add_field(name="Location", value=str(location), inline=True)
 
     # Health if available
-    health = mob.get('health') or mob.get('hp')
+    health = mob.get('health') or mob.get('hp') or mob.get('baseHealth')
     if health:
-        embed.add_field(name="Health", value=f"{health:,}" if isinstance(health, int) else str(health), inline=True)
+        try:
+            embed.add_field(name="Health", value=f"{int(health):,}", inline=True)
+        except (ValueError, TypeError):
+            embed.add_field(name="Health", value=str(health), inline=True)
 
     # Drops
-    drops = mob.get('drops', [])
+    drops = mob.get('drops', []) or mob.get('_drops', []) or mob.get('loot', [])
     if drops and isinstance(drops, list):
-        drop_names = [d.get('name', str(d)) if isinstance(d, dict) else str(d) for d in drops[:5]]
+        drop_names = []
+        for d in drops[:5]:
+            if isinstance(d, dict):
+                drop_names.append(d.get('itemName') or d.get('name') or str(d))
+            else:
+                drop_names.append(str(d))
         if drop_names:
             embed.add_field(name="Drops", value=", ".join(drop_names), inline=False)
 
@@ -2093,7 +2176,11 @@ class AocSearchView(discord.ui.View):
 
         # Add a button for each result (max 5)
         for i, item in enumerate(results[:5]):
-            name = item.get('name', f'Result {i+1}')
+            if result_type == 'item':
+                name = get_item_name(item) if isinstance(item, dict) else str(item)
+            else:
+                name = get_mob_name(item) if isinstance(item, dict) else str(item)
+
             if len(name) > 50:
                 name = name[:47] + "..."
 
@@ -2174,10 +2261,16 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                 if not items:
                     return await ctx.send("Could not fetch item data. The API may be unavailable.")
 
+                # Debug: check what we got
+                print(f"Got {len(items)} items, first item type: {type(items[0]).__name__ if items else 'N/A'}")
+
                 results = search_aoc_items(items, query)
 
                 if not results:
                     return await ctx.send(f"No items found matching **{query}**")
+
+                # Debug: check results
+                print(f"Found {len(results)} results, first result type: {type(results[0]).__name__ if results else 'N/A'}")
 
                 if len(results) == 1:
                     embed = format_aoc_item_embed(results[0])
@@ -2191,14 +2284,23 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     )
 
                     for i, item in enumerate(results[:5]):
-                        name = item.get('name', 'Unknown')
-                        item_type = item.get('itemType', 'Item')
-                        rarity = item.get('rarity', '')
-                        embed.add_field(
-                            name=f"{i+1}. {name}",
-                            value=f"{item_type} {f'({rarity})' if rarity else ''}",
-                            inline=False
-                        )
+                        try:
+                            name = get_item_name(item)
+                            type_tags = item.get('itemTypeTags', []) if isinstance(item, dict) else []
+                            if type_tags and isinstance(type_tags, list) and len(type_tags) > 0:
+                                first_tag = type_tags[0]
+                                type_str = str(first_tag).split('.')[-1].replace('_', ' ').title() if isinstance(first_tag, str) else 'Item'
+                            else:
+                                type_str = 'Item'
+                            grade = (item.get('grade', '') or item.get('rarity', '')) if isinstance(item, dict) else ''
+                            embed.add_field(
+                                name=f"{i+1}. {name}",
+                                value=f"{type_str} {f'({grade})' if grade else ''}",
+                                inline=False
+                            )
+                        except Exception as item_err:
+                            print(f"Error processing item {i}: {item_err}, item type: {type(item)}")
+                            embed.add_field(name=f"{i+1}. Item", value="Error loading", inline=False)
 
                     view = AocSearchView(results, 'item')
                     await ctx.send(embed=embed, view=view)
@@ -2209,9 +2311,10 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                 if not mobs:
                     return await ctx.send("Could not fetch mob data. The API may be unavailable.")
 
-                # Search mobs
+                # Search mobs - filter to valid dicts first
                 query_lower = query.lower()
-                results = [m for m in mobs if query_lower in m.get('name', '').lower()][:5]
+                valid_mobs = [m for m in mobs if isinstance(m, dict)]
+                results = [m for m in valid_mobs if query_lower in get_mob_name(m).lower()][:5]
 
                 if not results:
                     return await ctx.send(f"No mobs found matching **{query}**")
@@ -2227,9 +2330,11 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     )
 
                     for i, mob in enumerate(results[:5]):
-                        name = mob.get('name', 'Unknown')
-                        level = mob.get('level', '?')
-                        mob_type = mob.get('type', 'Creature')
+                        name = get_mob_name(mob)
+                        level = mob.get('level') or mob.get('minLevel') or '?'
+                        mob_type = mob.get('type') or mob.get('category') or 'Creature'
+                        if isinstance(mob_type, str):
+                            mob_type = mob_type.split('.')[-1].replace('_', ' ').title()
                         embed.add_field(
                             name=f"{i+1}. {name}",
                             value=f"Level {level} {mob_type}",
@@ -2240,7 +2345,58 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     await ctx.send(embed=embed, view=view)
 
         except Exception as e:
-            await ctx.send(f"Error searching: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            print(f"AOC ERROR:\n{tb}")
+            # Show last part of traceback in Discord
+            await ctx.send(f"Error searching: `{e}`\n```py\n{tb[-800:]}\n```")
+
+
+@bot.command(name='aoc_debug')
+@commands.is_owner()
+async def aoc_debug(ctx, *, search_term: str = None):
+    """Debug AOC API response (owner only). Usage: !aoc_debug [search term]"""
+    global _aoc_cache
+
+    # Clear cache first
+    _aoc_cache = {'items': None, 'mobs': None, 'abilities': None, 'npcs': None, 'last_fetch': None}
+
+    await ctx.send("Cache cleared. Fetching ALL items from API (this may take a moment)...")
+
+    async with ctx.typing():
+        try:
+            # Fetch all items using the regular function
+            items = await get_aoc_items()
+
+            info = f"**Total items fetched:** {len(items)}\n"
+
+            if items:
+                # Show some sample item names
+                sample_names = [get_item_name(i) for i in items[:5]]
+                info += f"**Sample items:** {', '.join(sample_names)}\n"
+
+                # If search term provided, test the search
+                if search_term:
+                    results = search_aoc_items(items, search_term)
+                    info += f"\n**Search for '{search_term}':** {len(results)} results\n"
+                    if results:
+                        for r in results[:5]:
+                            info += f"  - {get_item_name(r)}\n"
+                    else:
+                        # Show items that contain parts of the search
+                        partial = [i for i in items if search_term.lower()[:3] in get_item_name(i).lower()][:5]
+                        if partial:
+                            info += f"**Partial matches ({search_term[:3]}):** "
+                            info += ", ".join([get_item_name(i) for i in partial]) + "\n"
+            else:
+                info += "**No items fetched!**\n"
+
+            await ctx.send(info)
+
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            await ctx.send(f"Error: {e}\n```\n{tb[-500:]}\n```")
 
 
 @bot.command(name='aoc_item', aliases=['item'])
