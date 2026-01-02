@@ -1919,85 +1919,50 @@ def _fetch_aoc_page(url: str):
     )
 
 
-def _fetch_aoc_webpage(url: str):
-    """Fetch a webpage from ashescodex.com using curl_cffi"""
-    return curl_requests.get(
-        url,
-        impersonate="chrome120",
-        timeout=30,
-        headers={
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
-    )
-
-
-async def scrape_item_crafting(item_slug: str, force_refresh: bool = False, save_to_file: bool = True) -> dict:
-    """Scrape crafting recipe info from ashescodex.com item page"""
-    if not item_slug:
-        return {}
-
-    # Check cache first (unless force refresh)
-    if not force_refresh:
-        cached = get_cached_crafting(item_slug)
-        if cached:
-            return cached
-
+def _scrape_item_sync(item_slug: str) -> dict:
+    """Synchronous scraping - runs entirely in thread pool"""
     url = f"https://ashescodex.com/db/item/{item_slug}"
 
     try:
-        response = await bot.loop.run_in_executor(None, _fetch_aoc_webpage, url)
+        response = curl_requests.get(
+            url,
+            impersonate="chrome120",
+            timeout=30,
+            headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+        )
 
         if response.status_code != 200:
-            print(f"Failed to fetch {url}: status {response.status_code}")
-            return {}
+            return {'_error': f'status {response.status_code}'}
 
         soup = BeautifulSoup(response.text, 'lxml')
         crafting_info = {}
 
-        # Look for crafting/recipe sections - common patterns
-        # Try to find "Crafted By" or "Recipe" sections
-
-        # Look for recipe ingredients in tables or lists
-        recipe_section = soup.find(['div', 'section'], class_=lambda c: c and ('recipe' in c.lower() or 'craft' in c.lower() if c else False))
-
-        if not recipe_section:
-            # Try finding by text content
-            for heading in soup.find_all(['h2', 'h3', 'h4', 'span', 'div']):
-                text = heading.get_text().lower()
-                if 'recipe' in text or 'craft' in text or 'ingredient' in text:
-                    recipe_section = heading.parent
-                    break
-
-        # Try to find ingredients list
+        # Look for recipe ingredients
         ingredients = []
-
-        # Look for common ingredient patterns in the page
-        # Usually formatted as "Item Name x Quantity" or in a table
         for elem in soup.find_all(['li', 'tr', 'div']):
             text = elem.get_text(strip=True)
-            # Look for patterns like "Iron Ore x5" or "5x Iron Ore"
             match = re.search(r'(\d+)\s*x\s*(.+)|(.+?)\s*x\s*(\d+)', text, re.IGNORECASE)
             if match:
-                if match.group(1):  # "5x Iron Ore" format
-                    qty = match.group(1)
-                    item = match.group(2).strip()
-                else:  # "Iron Ore x5" format
-                    item = match.group(3).strip()
-                    qty = match.group(4)
-                if item and len(item) < 50:  # Sanity check
+                if match.group(1):
+                    qty, item = match.group(1), match.group(2).strip()
+                else:
+                    item, qty = match.group(3).strip(), match.group(4)
+                if item and len(item) < 50:
                     ingredients.append({'name': item, 'quantity': int(qty)})
 
         if ingredients:
-            crafting_info['ingredients'] = ingredients[:10]  # Limit to 10
+            crafting_info['ingredients'] = ingredients[:10]
 
-        # Look for profession info
+        # Look for profession
+        professions = ['blacksmithing', 'armorsmithing', 'weaponsmithing', 'leatherworking',
+                      'tailoring', 'jewelcrafting', 'alchemy', 'cooking', 'carpentry',
+                      'stonemasonry', 'scribing', 'tanning', 'lumbering', 'mining', 'herbalism']
         for elem in soup.find_all(['span', 'div', 'td']):
             text = elem.get_text(strip=True).lower()
-            professions = ['blacksmithing', 'armorsmithing', 'weaponsmithing', 'leatherworking',
-                          'tailoring', 'jewelcrafting', 'alchemy', 'cooking', 'carpentry',
-                          'stonemasonry', 'scribing', 'tanning', 'lumbering', 'mining', 'herbalism']
             for prof in professions:
                 if prof in text:
                     crafting_info['profession'] = prof.title()
@@ -2013,15 +1978,52 @@ async def scrape_item_crafting(item_slug: str, force_refresh: bool = False, save
                     crafting_info['station'] = station.title()
                     break
 
-        # Save to cache if we found crafting info
-        if crafting_info:
-            save_crafting_to_cache(item_slug, crafting_info, save_to_file=save_to_file)
-
         return crafting_info
 
     except Exception as e:
-        print(f"Error scraping {url}: {e}")
+        return {'_error': str(e)}
+
+
+# Thread pool for parallel scraping
+_scrape_executor = None
+
+
+def get_scrape_executor(max_workers: int = 10):
+    """Get or create thread pool for scraping"""
+    global _scrape_executor
+    if _scrape_executor is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _scrape_executor = ThreadPoolExecutor(max_workers=max_workers)
+    return _scrape_executor
+
+
+async def scrape_item_crafting(item_slug: str, force_refresh: bool = False, save_to_file: bool = True) -> dict:
+    """Async wrapper for scraping - runs in thread pool"""
+    if not item_slug:
         return {}
+
+    # Check cache first (unless force refresh)
+    if not force_refresh:
+        cached = get_cached_crafting(item_slug)
+        if cached:
+            return cached
+
+    # Run sync scraper in thread pool
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(get_scrape_executor(), _scrape_item_sync, item_slug)
+
+    # Handle errors
+    if result.get('_error'):
+        print(f"Failed to fetch {item_slug}: {result['_error']}")
+        return {}
+
+    # Save to cache
+    if result and save_to_file:
+        save_crafting_to_cache(item_slug, result, save_to_file=True)
+    elif result:
+        save_crafting_to_cache(item_slug, result, save_to_file=False)
+
+    return result
 
 
 async def fetch_aoc_data(endpoint: str) -> list:
