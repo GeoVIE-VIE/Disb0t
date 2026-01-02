@@ -230,6 +230,13 @@ def get_command_hash() -> str:
 async def on_ready():
     global last_command_hash
     print(f'{bot.user} has connected to Discord!')
+
+    # Load AOC cache from file
+    if load_aoc_cache():
+        print("AOC cache loaded successfully")
+    else:
+        print("No AOC cache found - use !aoc_refresh to download data")
+
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
@@ -1839,16 +1846,42 @@ class ChartTimeframeView(discord.ui.View):
 
 # ============== Ashes of Creation (Ashes Codex) Feature ==============
 
-# Cache for AOC data to avoid repeated API calls
+AOC_CACHE_FILE = '.aoc_cache.json'
+
+# In-memory cache (loaded from file)
 _aoc_cache = {
-    'items': None,
-    'mobs': None,
-    'abilities': None,
-    'npcs': None,
-    'recipes': None,
-    'last_fetch': None
+    'items': [],
+    'mobs': [],
+    'last_updated': None
 }
-AOC_CACHE_DURATION = 3600  # 1 hour cache
+
+
+def load_aoc_cache():
+    """Load AOC data from local JSON file"""
+    global _aoc_cache
+    try:
+        if os.path.exists(AOC_CACHE_FILE):
+            with open(AOC_CACHE_FILE, 'r') as f:
+                data = json.load(f)
+                _aoc_cache = data
+                print(f"Loaded AOC cache: {len(data.get('items', []))} items, {len(data.get('mobs', []))} mobs")
+                return True
+    except Exception as e:
+        print(f"Error loading AOC cache: {e}")
+    return False
+
+
+def save_aoc_cache():
+    """Save AOC data to local JSON file"""
+    global _aoc_cache
+    try:
+        with open(AOC_CACHE_FILE, 'w') as f:
+            json.dump(_aoc_cache, f)
+        print(f"Saved AOC cache: {len(_aoc_cache.get('items', []))} items, {len(_aoc_cache.get('mobs', []))} mobs")
+        return True
+    except Exception as e:
+        print(f"Error saving AOC cache: {e}")
+        return False
 
 
 def _fetch_aoc_page(url: str):
@@ -1928,61 +1961,62 @@ async def fetch_aoc_data(endpoint: str) -> list:
     return all_data
 
 
-async def get_aoc_items() -> list:
-    """Get cached or fresh items data"""
+async def refresh_aoc_cache(ctx=None) -> bool:
+    """Fetch all data from API and save to local cache file"""
     global _aoc_cache
 
-    now = time.time()
-    if _aoc_cache['items'] and _aoc_cache['last_fetch']:
-        if now - _aoc_cache['last_fetch'] < AOC_CACHE_DURATION:
-            return _aoc_cache['items']
+    if ctx:
+        await ctx.send("Fetching items from Ashes Codex API...")
 
     items = await fetch_aoc_data('items')
-    if items:
-        _aoc_cache['items'] = items
-        _aoc_cache['last_fetch'] = now
 
-    return items or []
-
-
-async def get_aoc_mobs() -> list:
-    """Get cached or fresh mobs data"""
-    global _aoc_cache
-
-    now = time.time()
-    if _aoc_cache['mobs'] and _aoc_cache['last_fetch']:
-        if now - _aoc_cache['last_fetch'] < AOC_CACHE_DURATION:
-            return _aoc_cache['mobs']
+    if ctx:
+        await ctx.send(f"Fetched {len(items)} items. Fetching mobs...")
 
     mobs = await fetch_aoc_data('mobs')
-    if mobs:
-        _aoc_cache['mobs'] = mobs
 
-    return mobs or []
+    if items or mobs:
+        _aoc_cache = {
+            'items': items or [],
+            'mobs': mobs or [],
+            'last_updated': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        save_aoc_cache()
+
+        if ctx:
+            await ctx.send(f"Cache saved: {len(items)} items, {len(mobs)} mobs")
+        return True
+
+    if ctx:
+        await ctx.send("Failed to fetch data from API")
+    return False
 
 
-async def get_aoc_recipes() -> list:
-    """Get recipes by extracting craftable items (recipes are embedded in item data)"""
+def get_aoc_items() -> list:
+    """Get items from local cache"""
     global _aoc_cache
 
-    now = time.time()
-    if _aoc_cache['recipes'] and _aoc_cache['last_fetch']:
-        if now - _aoc_cache['last_fetch'] < AOC_CACHE_DURATION:
-            return _aoc_cache['recipes']
+    # Try loading from file if cache is empty
+    if not _aoc_cache.get('items'):
+        load_aoc_cache()
 
-    # Get all items - in AoC most items are craftable
-    items = await get_aoc_items()
+    return _aoc_cache.get('items', [])
 
-    if not items:
-        print("No items fetched for recipes")
-        return []
 
-    # For now, return all items as potential recipes
-    # The format function will show crafting info if available
-    _aoc_cache['recipes'] = items
+def get_aoc_mobs() -> list:
+    """Get mobs from local cache"""
+    global _aoc_cache
 
-    print(f"Using {len(items)} items as recipe database")
-    return items
+    # Try loading from file if cache is empty
+    if not _aoc_cache.get('mobs'):
+        load_aoc_cache()
+
+    return _aoc_cache.get('mobs', [])
+
+
+def get_aoc_recipes() -> list:
+    """Get recipes (same as items - all items can potentially be crafted)"""
+    return get_aoc_items()
 
 
 def get_item_name(item: dict) -> str:
@@ -2383,7 +2417,7 @@ async def aoc(ctx, category: str = None, *, query: str = None):
     async with ctx.typing():
         try:
             if category in ['item', 'items', 'search']:
-                items = await get_aoc_items()
+                items = get_aoc_items()
 
                 if not items:
                     return await ctx.send("Could not fetch item data. The API may be unavailable.")
@@ -2433,7 +2467,7 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     await ctx.send(embed=embed, view=view)
 
             elif category in ['mob', 'mobs', 'creature']:
-                mobs = await get_aoc_mobs()
+                mobs = get_aoc_mobs()
 
                 if not mobs:
                     return await ctx.send("Could not fetch mob data. The API may be unavailable.")
@@ -2472,7 +2506,7 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     await ctx.send(embed=embed, view=view)
 
             elif category in ['recipe', 'recipes']:
-                recipes = await get_aoc_recipes()
+                recipes = get_aoc_recipes()
 
                 if not recipes:
                     return await ctx.send("Could not fetch recipe data. The API may be unavailable.")
@@ -2516,51 +2550,33 @@ async def aoc(ctx, category: str = None, *, query: str = None):
             await ctx.send(f"Error searching: `{e}`\n```py\n{tb[-800:]}\n```")
 
 
-@bot.command(name='aoc_debug')
+@bot.command(name='aoc_refresh', aliases=['aoc_update'])
 @commands.is_owner()
-async def aoc_debug(ctx, *, search_term: str = None):
-    """Debug AOC API response (owner only). Usage: !aoc_debug [search term]"""
-    global _aoc_cache
-
-    # Clear cache first
-    _aoc_cache = {'items': None, 'mobs': None, 'abilities': None, 'npcs': None, 'recipes': None, 'last_fetch': None}
-
-    await ctx.send("Cache cleared. Fetching ALL items from API (this may take a moment)...")
-
+async def aoc_refresh_cmd(ctx):
+    """Refresh AOC cache from API (owner only). Downloads all items and mobs."""
     async with ctx.typing():
-        try:
-            # Fetch all items using the regular function
-            items = await get_aoc_items()
+        await refresh_aoc_cache(ctx)
 
-            info = f"**Total items fetched:** {len(items)}\n"
 
-            if items:
-                # Show some sample item names
-                sample_names = [get_item_name(i) for i in items[:5]]
-                info += f"**Sample items:** {', '.join(sample_names)}\n"
+@bot.command(name='aoc_status')
+async def aoc_status(ctx):
+    """Show AOC cache status"""
+    items = get_aoc_items()
+    mobs = get_aoc_mobs()
+    last_updated = _aoc_cache.get('last_updated', 'Never')
 
-                # If search term provided, test the search
-                if search_term:
-                    results = search_aoc_items(items, search_term)
-                    info += f"\n**Search for '{search_term}':** {len(results)} results\n"
-                    if results:
-                        for r in results[:5]:
-                            info += f"  - {get_item_name(r)}\n"
-                    else:
-                        # Show items that contain parts of the search
-                        partial = [i for i in items if search_term.lower()[:3] in get_item_name(i).lower()][:5]
-                        if partial:
-                            info += f"**Partial matches ({search_term[:3]}):** "
-                            info += ", ".join([get_item_name(i) for i in partial]) + "\n"
-            else:
-                info += "**No items fetched!**\n"
+    embed = discord.Embed(
+        title="📊 Ashes Codex Cache Status",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Items", value=str(len(items)), inline=True)
+    embed.add_field(name="Mobs", value=str(len(mobs)), inline=True)
+    embed.add_field(name="Last Updated", value=last_updated, inline=True)
 
-            await ctx.send(info)
+    if not items and not mobs:
+        embed.description = "⚠️ Cache is empty! Use `!aoc_refresh` to download data."
 
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            await ctx.send(f"Error: {e}\n```\n{tb[-500:]}\n```")
+    await ctx.send(embed=embed)
 
 
 @bot.command(name='aoc_item', aliases=['item'])
