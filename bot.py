@@ -1970,24 +1970,19 @@ async def get_aoc_recipes() -> list:
         if now - _aoc_cache['last_fetch'] < AOC_CACHE_DURATION:
             return _aoc_cache['recipes']
 
-    # Recipes are embedded in items - extract items that can be crafted
+    # Get all items - in AoC most items are craftable
     items = await get_aoc_items()
-    recipes = []
 
-    for item in items:
-        if not isinstance(item, dict):
-            continue
+    if not items:
+        print("No items fetched for recipes")
+        return []
 
-        # Check if item has crafting info (profession tag indicates it's craftable)
-        profession = item.get('professionTag') or item.get('requiredProfessionId')
-        if profession:
-            recipes.append(item)
+    # For now, return all items as potential recipes
+    # The format function will show crafting info if available
+    _aoc_cache['recipes'] = items
 
-    if recipes:
-        _aoc_cache['recipes'] = recipes
-
-    print(f"Extracted {len(recipes)} craftable items from {len(items)} total items")
-    return recipes
+    print(f"Using {len(items)} items as recipe database")
+    return items
 
 
 def get_item_name(item: dict) -> str:
