@@ -1996,7 +1996,7 @@ def format_aoc_item_embed(item: dict) -> discord.Embed:
 
     # Get name from various possible fields
     name = get_item_name(item)
-    description = item.get('description', 'No description available.')
+    description = item.get('description') or item.get('flavorText', '')
 
     # Clean HTML from description
     if description:
@@ -2004,17 +2004,10 @@ def format_aoc_item_embed(item: dict) -> discord.Embed:
         if len(description) > 500:
             description = description[:497] + "..."
     else:
-        description = "No description available."
+        description = ""
 
-    # Determine item type from tags
-    type_tags = item.get('itemTypeTags', [])
-    if isinstance(type_tags, list):
-        type_tags = [str(t) for t in type_tags]
-    else:
-        type_tags = []
-
-    # Color based on grade/rarity
-    grade = str(item.get('grade', '') or item.get('rarity', '')).lower()
+    # Color based on rarity
+    rarity_max = str(item.get('rarityMax', '') or item.get('grade', '')).lower()
     color_map = {
         'legendary': discord.Color.gold(),
         'epic': discord.Color.purple(),
@@ -2022,28 +2015,38 @@ def format_aoc_item_embed(item: dict) -> discord.Embed:
         'uncommon': discord.Color.green(),
         'common': discord.Color.light_grey()
     }
-    color = color_map.get(grade, discord.Color.blue())
+    color = color_map.get(rarity_max, discord.Color.blue())
 
     embed = discord.Embed(
         title=f"⚔️ {name}",
-        description=description,
+        description=description if description else None,
         color=color
     )
 
-    # Item type from tags
-    if type_tags:
-        # Clean up tag names (remove prefixes like "ItemType.")
-        clean_tags = [t.split('.')[-1].replace('_', ' ').title() for t in type_tags[:3]]
-        embed.add_field(name="Type", value=', '.join(clean_tags), inline=True)
+    # Item subtype
+    sub_type = item.get('subType', '')
+    if sub_type:
+        type_str = str(sub_type).split('.')[-1].replace('_', ' ').title()
+        embed.add_field(name="Type", value=type_str, inline=True)
 
     # Level requirement
     level = item.get('level') or item.get('levelRequirement')
     if level:
         embed.add_field(name="Level", value=str(level), inline=True)
 
-    # Grade/Rarity
-    if grade:
-        embed.add_field(name="Rarity", value=grade.capitalize(), inline=True)
+    # Rarity range
+    rarity_min = item.get('rarityMin', '')
+    rarity_max = item.get('rarityMax', '')
+    if rarity_min and rarity_max:
+        min_str = str(rarity_min).split('.')[-1].replace('_', ' ').title()
+        max_str = str(rarity_max).split('.')[-1].replace('_', ' ').title()
+        if min_str != max_str:
+            embed.add_field(name="Rarity", value=f"{min_str} - {max_str}", inline=True)
+        else:
+            embed.add_field(name="Rarity", value=min_str, inline=True)
+    elif rarity_max:
+        max_str = str(rarity_max).split('.')[-1].replace('_', ' ').title()
+        embed.add_field(name="Rarity", value=max_str, inline=True)
 
     # Equipment slots
     equip_slots = item.get('equipSlots', [])
@@ -2051,32 +2054,37 @@ def format_aoc_item_embed(item: dict) -> discord.Embed:
         slots = [str(s).split('.')[-1].replace('_', ' ').title() for s in equip_slots[:3]]
         embed.add_field(name="Slot", value=', '.join(slots), inline=True)
 
-    # Stats from statBlock if available
-    stat_block = item.get('statBlock', {})
-    if stat_block and isinstance(stat_block, dict):
-        stat_lines = []
-        for stat_name, stat_data in list(stat_block.items())[:6]:
-            clean_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', str(stat_name)).title()
-            if isinstance(stat_data, dict):
-                # May have min/max values
-                val = stat_data.get('value') or stat_data.get('min', '?')
-            else:
-                val = stat_data
-            stat_lines.append(f"• {clean_name}: {val}")
-        if stat_lines:
-            embed.add_field(name="Stats", value="\n".join(stat_lines), inline=False)
-
     # Crafting info
     profession = item.get('professionTag') or item.get('requiredProfessionId')
     if profession:
         prof_name = str(profession).split('.')[-1].replace('_', ' ').title()
         embed.add_field(name="Crafting", value=prof_name, inline=True)
 
-    # Dropped by
+    # Dropped by - format nicely
     dropped_by = item.get('_droppedBy', [])
     if dropped_by and isinstance(dropped_by, list) and len(dropped_by) > 0:
-        drop_names = [str(d.get('name', d) if isinstance(d, dict) else d) for d in dropped_by[:3]]
-        embed.add_field(name="Dropped By", value=', '.join(drop_names), inline=False)
+        drop_names = []
+        for d in dropped_by[:5]:
+            if isinstance(d, dict):
+                display_name = d.get('_displayName') or d.get('name') or d.get('_slug', '')
+                level_range = d.get('_levelRange', '')
+                if display_name:
+                    if level_range and level_range != '?':
+                        drop_names.append(f"{display_name} (Lv.{level_range})")
+                    else:
+                        drop_names.append(display_name)
+            elif isinstance(d, str):
+                drop_names.append(d)
+        if drop_names:
+            drops_text = '\n'.join(drop_names)
+            if len(drops_text) > 1000:
+                drops_text = drops_text[:997] + "..."
+            embed.add_field(name="Dropped By", value=drops_text, inline=False)
+
+    # Link to website
+    slug = item.get('_slug') or item.get('slug', '')
+    if slug:
+        embed.url = f"https://ashescodex.com/item/{slug}"
 
     embed.set_footer(text="Ashes of Creation | ashescodex.com")
 
