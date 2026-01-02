@@ -1853,6 +1853,7 @@ AOC_CACHE_FILE = '.aoc_cache.json'
 _aoc_cache = {
     'items': [],
     'mobs': [],
+    'crafting': {},  # slug -> crafting info dict
     'last_updated': None
 }
 
@@ -1864,8 +1865,11 @@ def load_aoc_cache():
         if os.path.exists(AOC_CACHE_FILE):
             with open(AOC_CACHE_FILE, 'r') as f:
                 data = json.load(f)
+                # Ensure crafting dict exists for backwards compatibility
+                if 'crafting' not in data:
+                    data['crafting'] = {}
                 _aoc_cache = data
-                print(f"Loaded AOC cache: {len(data.get('items', []))} items, {len(data.get('mobs', []))} mobs")
+                print(f"Loaded AOC cache: {len(data.get('items', []))} items, {len(data.get('mobs', []))} mobs, {len(data.get('crafting', {}))} recipes")
                 return True
     except Exception as e:
         print(f"Error loading AOC cache: {e}")
@@ -1878,11 +1882,28 @@ def save_aoc_cache():
     try:
         with open(AOC_CACHE_FILE, 'w') as f:
             json.dump(_aoc_cache, f)
-        print(f"Saved AOC cache: {len(_aoc_cache.get('items', []))} items, {len(_aoc_cache.get('mobs', []))} mobs")
+        print(f"Saved AOC cache: {len(_aoc_cache.get('items', []))} items, {len(_aoc_cache.get('mobs', []))} mobs, {len(_aoc_cache.get('crafting', {}))} recipes")
         return True
     except Exception as e:
         print(f"Error saving AOC cache: {e}")
         return False
+
+
+def get_cached_crafting(slug: str) -> dict:
+    """Get cached crafting info for an item slug"""
+    global _aoc_cache
+    return _aoc_cache.get('crafting', {}).get(slug, {})
+
+
+def save_crafting_to_cache(slug: str, crafting_info: dict, save_to_file: bool = True):
+    """Save crafting info to cache"""
+    global _aoc_cache
+    if 'crafting' not in _aoc_cache:
+        _aoc_cache['crafting'] = {}
+    if crafting_info:  # Only save if we got actual data
+        _aoc_cache['crafting'][slug] = crafting_info
+        if save_to_file:
+            save_aoc_cache()
 
 
 def _fetch_aoc_page(url: str):
@@ -1912,10 +1933,16 @@ def _fetch_aoc_webpage(url: str):
     )
 
 
-async def scrape_item_crafting(item_slug: str) -> dict:
+async def scrape_item_crafting(item_slug: str, force_refresh: bool = False, save_to_file: bool = True) -> dict:
     """Scrape crafting recipe info from ashescodex.com item page"""
     if not item_slug:
         return {}
+
+    # Check cache first (unless force refresh)
+    if not force_refresh:
+        cached = get_cached_crafting(item_slug)
+        if cached:
+            return cached
 
     url = f"https://ashescodex.com/item/{item_slug}"
 
@@ -1985,6 +2012,10 @@ async def scrape_item_crafting(item_slug: str) -> dict:
                 if station in text:
                     crafting_info['station'] = station.title()
                     break
+
+        # Save to cache if we found crafting info
+        if crafting_info:
+            save_crafting_to_cache(item_slug, crafting_info, save_to_file=save_to_file)
 
         return crafting_info
 
@@ -2072,20 +2103,82 @@ async def refresh_aoc_cache(ctx=None) -> bool:
     mobs = await fetch_aoc_data('mobs')
 
     if items or mobs:
+        # Preserve existing crafting cache
+        existing_crafting = _aoc_cache.get('crafting', {})
         _aoc_cache = {
             'items': items or [],
             'mobs': mobs or [],
+            'crafting': existing_crafting,
             'last_updated': time.strftime('%Y-%m-%d %H:%M:%S')
         }
         save_aoc_cache()
 
         if ctx:
-            await ctx.send(f"Cache saved: {len(items)} items, {len(mobs)} mobs")
+            await ctx.send(f"Cache saved: {len(items)} items, {len(mobs)} mobs, {len(existing_crafting)} recipes preserved")
         return True
 
     if ctx:
         await ctx.send("Failed to fetch data from API")
     return False
+
+
+async def bulk_scrape_crafting(ctx=None, limit: int = None) -> int:
+    """Bulk scrape crafting data for all items"""
+    global _aoc_cache
+
+    items = get_aoc_items()
+    if not items:
+        if ctx:
+            await ctx.send("No items in cache. Run `!aoc_refresh` first.")
+        return 0
+
+    # Get items with slugs that aren't already cached
+    existing_crafting = _aoc_cache.get('crafting', {})
+    items_to_scrape = []
+    for item in items:
+        slug = item.get('_slug') or item.get('slug', '')
+        if slug and slug not in existing_crafting:
+            items_to_scrape.append((slug, get_item_name(item)))
+
+    if limit:
+        items_to_scrape = items_to_scrape[:limit]
+
+    if not items_to_scrape:
+        if ctx:
+            await ctx.send("All items already have crafting data cached!")
+        return 0
+
+    if ctx:
+        await ctx.send(f"Scraping crafting data for {len(items_to_scrape)} items... This may take a while.")
+
+    scraped_count = 0
+    errors = 0
+    for i, (slug, name) in enumerate(items_to_scrape):
+        try:
+            # Don't save to file each time - we'll batch save
+            crafting_info = await scrape_item_crafting(slug, force_refresh=True, save_to_file=False)
+            if crafting_info:
+                scraped_count += 1
+
+            # Progress update and save every 50 items
+            if (i + 1) % 50 == 0:
+                save_aoc_cache()  # Batch save every 50
+                if ctx:
+                    await ctx.send(f"Progress: {i + 1}/{len(items_to_scrape)} items scraped ({scraped_count} with recipes)")
+
+            # Small delay to avoid hammering the server
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            errors += 1
+            print(f"Error scraping {slug}: {e}")
+
+    # Final save
+    save_aoc_cache()
+
+    if ctx:
+        await ctx.send(f"Done! Scraped {scraped_count} recipes from {len(items_to_scrape)} items. ({errors} errors)")
+
+    return scraped_count
 
 
 def get_aoc_items() -> list:
@@ -2528,11 +2621,20 @@ async def aoc_refresh_cmd(ctx):
         await refresh_aoc_cache(ctx)
 
 
+@bot.command(name='aoc_scrape', aliases=['aoc_recipes'])
+@commands.is_owner()
+async def aoc_scrape_cmd(ctx, limit: int = None):
+    """Bulk scrape crafting recipes from website (owner only).
+    Usage: !aoc_scrape [limit] - Scrape crafting data for all/limited items."""
+    await bulk_scrape_crafting(ctx, limit)
+
+
 @bot.command(name='aoc_status')
 async def aoc_status(ctx):
     """Show AOC cache status"""
     items = get_aoc_items()
     mobs = get_aoc_mobs()
+    crafting = _aoc_cache.get('crafting', {})
     last_updated = _aoc_cache.get('last_updated', 'Never')
 
     embed = discord.Embed(
@@ -2541,10 +2643,13 @@ async def aoc_status(ctx):
     )
     embed.add_field(name="Items", value=str(len(items)), inline=True)
     embed.add_field(name="Mobs", value=str(len(mobs)), inline=True)
+    embed.add_field(name="Recipes", value=str(len(crafting)), inline=True)
     embed.add_field(name="Last Updated", value=last_updated, inline=True)
 
     if not items and not mobs:
         embed.description = "⚠️ Cache is empty! Use `!aoc_refresh` to download data."
+    elif len(crafting) == 0:
+        embed.description = "💡 Use `!aoc_scrape` to download crafting recipes."
 
     await ctx.send(embed=embed)
 
