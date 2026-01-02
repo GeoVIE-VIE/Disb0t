@@ -205,7 +205,7 @@ Timeframes: 1w, 2w, 1m, 3m, 6m, 1y
     aoc_cmds = """
 `!aoc item <name>` / `!item` - Look up items
 `!aoc mob <name>` / `!mob` - Look up mobs
-`!aoc recipe <name>` / `!recipe` - Look up recipes
+`!aoc_status` - Show cache status
 """
     embed.add_field(name="⚔️ Ashes of Creation", value=aoc_cmds.strip(), inline=False)
 
@@ -2014,11 +2014,6 @@ def get_aoc_mobs() -> list:
     return _aoc_cache.get('mobs', [])
 
 
-def get_aoc_recipes() -> list:
-    """Get recipes (same as items - all items can potentially be crafted)"""
-    return get_aoc_items()
-
-
 def get_item_name(item: dict) -> str:
     """Get item name from various possible field names"""
     if not isinstance(item, dict):
@@ -2224,104 +2219,6 @@ def format_aoc_mob_embed(mob: dict) -> discord.Embed:
     return embed
 
 
-def get_recipe_name(recipe: dict) -> str:
-    """Get recipe name from various possible field names"""
-    if not isinstance(recipe, dict):
-        return str(recipe)
-    return recipe.get('recipeName') or recipe.get('name') or recipe.get('itemName') or recipe.get('displayName', 'Unknown Recipe')
-
-
-def search_aoc_recipes(recipes: list, query: str, limit: int = 5) -> list:
-    """Search recipes by name, return top matches"""
-    query_lower = query.lower()
-
-    # Filter to only dict items
-    valid_recipes = [r for r in recipes if isinstance(r, dict)]
-
-    # Exact match first
-    exact = [r for r in valid_recipes if get_recipe_name(r).lower() == query_lower]
-    if exact:
-        return exact[:limit]
-
-    # Starts with query
-    starts_with = [r for r in valid_recipes if get_recipe_name(r).lower().startswith(query_lower)]
-    if starts_with:
-        return starts_with[:limit]
-
-    # Contains query
-    contains = [r for r in valid_recipes if query_lower in get_recipe_name(r).lower()]
-    return contains[:limit]
-
-
-def format_aoc_recipe_embed(recipe: dict) -> discord.Embed:
-    """Format an AOC recipe into a Discord embed"""
-    if not isinstance(recipe, dict):
-        return discord.Embed(title="Error", description="Invalid recipe data", color=discord.Color.red())
-
-    name = get_recipe_name(recipe)
-    description = recipe.get('description', '')
-
-    if description:
-        description = re.sub(r'<[^>]+>', '', str(description))
-        if len(description) > 500:
-            description = description[:497] + "..."
-
-    embed = discord.Embed(
-        title=f"📜 {name}",
-        description=description if description else None,
-        color=discord.Color.orange()
-    )
-
-    # Profession
-    profession = recipe.get('profession') or recipe.get('professionTag') or recipe.get('_profession')
-    if profession:
-        if isinstance(profession, dict):
-            prof_name = profession.get('name') or profession.get('_displayName', '')
-        else:
-            prof_name = str(profession).split('.')[-1].replace('_', ' ').title()
-        if prof_name:
-            embed.add_field(name="Profession", value=prof_name, inline=True)
-
-    # Level/Tier
-    level = recipe.get('level') or recipe.get('tier') or recipe.get('requiredLevel')
-    if level:
-        embed.add_field(name="Level", value=str(level), inline=True)
-
-    # Output item
-    output = recipe.get('output') or recipe.get('result') or recipe.get('_output')
-    if output:
-        if isinstance(output, dict):
-            output_name = output.get('itemName') or output.get('name') or output.get('_displayName', '')
-            output_qty = output.get('quantity', 1)
-            if output_name:
-                embed.add_field(name="Creates", value=f"{output_name} x{output_qty}" if output_qty > 1 else output_name, inline=True)
-        elif isinstance(output, str):
-            embed.add_field(name="Creates", value=output, inline=True)
-
-    # Ingredients
-    ingredients = recipe.get('ingredients') or recipe.get('materials') or recipe.get('_ingredients', [])
-    if ingredients and isinstance(ingredients, list):
-        ing_lines = []
-        for ing in ingredients[:8]:
-            if isinstance(ing, dict):
-                ing_name = ing.get('itemName') or ing.get('name') or ing.get('_displayName', 'Unknown')
-                ing_qty = ing.get('quantity') or ing.get('amount') or ing.get('count', 1)
-                ing_lines.append(f"• {ing_name} x{ing_qty}")
-            elif isinstance(ing, str):
-                ing_lines.append(f"• {ing}")
-        if ing_lines:
-            embed.add_field(name="Ingredients", value="\n".join(ing_lines), inline=False)
-
-    # Link to website
-    slug = recipe.get('_slug') or recipe.get('slug', '')
-    if slug:
-        embed.url = f"https://ashescodex.com/recipe/{slug}"
-
-    embed.set_footer(text="Ashes of Creation | ashescodex.com")
-
-    return embed
-
-
 class AocSearchView(discord.ui.View):
     """View with buttons to select from multiple search results"""
 
@@ -2334,8 +2231,6 @@ class AocSearchView(discord.ui.View):
         for i, item in enumerate(results[:5]):
             if result_type == 'item':
                 name = get_item_name(item) if isinstance(item, dict) else str(item)
-            elif result_type == 'recipe':
-                name = get_recipe_name(item) if isinstance(item, dict) else str(item)
             else:
                 name = get_mob_name(item) if isinstance(item, dict) else str(item)
 
@@ -2358,8 +2253,6 @@ class AocSearchView(discord.ui.View):
             item = self.results[index]
             if self.result_type == 'item':
                 embed = format_aoc_item_embed(item)
-            elif self.result_type == 'recipe':
-                embed = format_aoc_recipe_embed(item)
             else:
                 embed = format_aoc_mob_embed(item)
 
@@ -2371,26 +2264,23 @@ class AocSearchView(discord.ui.View):
 
 @bot.command(name='aoc')
 async def aoc(ctx, category: str = None, *, query: str = None):
-    """Look up Ashes of Creation data. Usage: !aoc <item|mob|recipe|search> <name>
+    """Look up Ashes of Creation data. Usage: !aoc <item|mob> <name>
 
     Examples:
     !aoc item sword
     !aoc mob wolf
-    !aoc recipe iron ingot
     """
     if not category:
         embed = discord.Embed(
             title="⚔️ Ashes of Creation Lookup",
-            description="Look up items, mobs, recipes and more from Ashes of Creation!",
+            description="Look up items and mobs from Ashes of Creation!",
             color=discord.Color.orange()
         )
         embed.add_field(
             name="Commands",
             value=(
                 "`!aoc item <name>` - Search for items\n"
-                "`!aoc mob <name>` - Search for mobs/creatures\n"
-                "`!aoc recipe <name>` - Search for crafting recipes\n"
-                "`!aoc search <query>` - Search items"
+                "`!aoc mob <name>` - Search for mobs/creatures"
             ),
             inline=False
         )
@@ -2398,8 +2288,7 @@ async def aoc(ctx, category: str = None, *, query: str = None):
             name="Examples",
             value=(
                 "`!aoc item sword`\n"
-                "`!aoc mob wolf`\n"
-                "`!aoc recipe iron`"
+                "`!aoc mob wolf`"
             ),
             inline=False
         )
@@ -2408,8 +2297,8 @@ async def aoc(ctx, category: str = None, *, query: str = None):
 
     category = category.lower()
 
-    if category not in ['item', 'items', 'mob', 'mobs', 'creature', 'recipe', 'recipes', 'search']:
-        return await ctx.send("Invalid category! Use: `item`, `mob`, `recipe`, or `search`")
+    if category not in ['item', 'items', 'mob', 'mobs', 'creature', 'search']:
+        return await ctx.send("Invalid category! Use: `item` or `mob`")
 
     if not query:
         return await ctx.send(f"Usage: `!aoc {category} <name>`")
@@ -2505,43 +2394,6 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     view = AocSearchView(results, 'mob')
                     await ctx.send(embed=embed, view=view)
 
-            elif category in ['recipe', 'recipes']:
-                recipes = get_aoc_recipes()
-
-                if not recipes:
-                    return await ctx.send("Could not fetch recipe data. The API may be unavailable.")
-
-                results = search_aoc_recipes(recipes, query)
-
-                if not results:
-                    return await ctx.send(f"No recipes found matching **{query}**")
-
-                if len(results) == 1:
-                    embed = format_aoc_recipe_embed(results[0])
-                    await ctx.send(embed=embed)
-                else:
-                    embed = discord.Embed(
-                        title=f"🔍 Found {len(results)} recipes matching '{query}'",
-                        description="Select a recipe to view details:",
-                        color=discord.Color.orange()
-                    )
-
-                    for i, recipe in enumerate(results[:5]):
-                        name = get_recipe_name(recipe)
-                        profession = recipe.get('profession') or recipe.get('_profession') or ''
-                        if isinstance(profession, dict):
-                            profession = profession.get('name', '')
-                        elif profession:
-                            profession = str(profession).split('.')[-1].replace('_', ' ').title()
-                        embed.add_field(
-                            name=f"{i+1}. {name}",
-                            value=profession if profession else "Crafting Recipe",
-                            inline=False
-                        )
-
-                    view = AocSearchView(results, 'recipe')
-                    await ctx.send(embed=embed, view=view)
-
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
@@ -2593,14 +2445,6 @@ async def aoc_mob(ctx, *, query: str = None):
     if not query:
         return await ctx.send("Usage: `!mob <name>` (e.g. `!mob wolf`)")
     await aoc(ctx, 'mob', query=query)
-
-
-@bot.command(name='aoc_recipe', aliases=['recipe'])
-async def aoc_recipe(ctx, *, query: str = None):
-    """Shortcut for !aoc recipe <name>"""
-    if not query:
-        return await ctx.send("Usage: `!recipe <name>` (e.g. `!recipe iron ingot`)")
-    await aoc(ctx, 'recipe', query=query)
 
 
 @bot.command(name='chart', aliases=['c'])
