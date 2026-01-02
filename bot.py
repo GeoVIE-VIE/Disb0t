@@ -1962,7 +1962,7 @@ async def get_aoc_mobs() -> list:
 
 
 async def get_aoc_recipes() -> list:
-    """Get cached or fresh recipes data"""
+    """Get recipes by extracting craftable items (recipes are embedded in item data)"""
     global _aoc_cache
 
     now = time.time()
@@ -1970,11 +1970,24 @@ async def get_aoc_recipes() -> list:
         if now - _aoc_cache['last_fetch'] < AOC_CACHE_DURATION:
             return _aoc_cache['recipes']
 
-    recipes = await fetch_aoc_data('recipes')
+    # Recipes are embedded in items - extract items that can be crafted
+    items = await get_aoc_items()
+    recipes = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        # Check if item has crafting info (profession tag indicates it's craftable)
+        profession = item.get('professionTag') or item.get('requiredProfessionId')
+        if profession:
+            recipes.append(item)
+
     if recipes:
         _aoc_cache['recipes'] = recipes
 
-    return recipes or []
+    print(f"Extracted {len(recipes)} craftable items from {len(items)} total items")
+    return recipes
 
 
 def get_item_name(item: dict) -> str:
