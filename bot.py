@@ -2136,7 +2136,7 @@ async def bulk_scrape_crafting(ctx=None, limit: int = None) -> int:
     existing_crafting = _aoc_cache.get('crafting', {})
     items_to_scrape = []
     for item in items:
-        slug = item.get('_slug') or item.get('slug', '')
+        slug = get_item_slug(item)
         if slug and slug not in existing_crafting:
             items_to_scrape.append((slug, get_item_name(item)))
 
@@ -2208,6 +2208,19 @@ def get_item_name(item: dict) -> str:
     if not isinstance(item, dict):
         return str(item)
     return item.get('itemName') or item.get('name') or item.get('displayName', 'Unknown')
+
+
+def get_item_slug(item: dict) -> str:
+    """Generate a URL slug from item name (ashescodex uses name-based slugs)"""
+    name = get_item_name(item)
+    if not name or name == 'Unknown':
+        return ''
+    # Convert to lowercase, replace spaces with hyphens, remove special chars
+    slug = name.lower().strip()
+    slug = re.sub(r'[^a-z0-9\s-]', '', slug)  # Remove special chars
+    slug = re.sub(r'\s+', '-', slug)  # Replace spaces with hyphens
+    slug = re.sub(r'-+', '-', slug)  # Remove duplicate hyphens
+    return slug.strip('-')
 
 
 def search_aoc_items(items: list, query: str, limit: int = 5) -> list:
@@ -2342,7 +2355,7 @@ def format_aoc_item_embed(item: dict, crafting_info: dict = None) -> discord.Emb
             embed.add_field(name="Dropped By", value=drops_text, inline=False)
 
     # Link to website
-    slug = item.get('_slug') or item.get('slug', '')
+    slug = get_item_slug(item)
     if slug:
         embed.url = f"https://ashescodex.com/item/{slug}"
 
@@ -2458,7 +2471,7 @@ class AocSearchView(discord.ui.View):
 
             item = self.results[index]
             if self.result_type == 'item':
-                slug = item.get('_slug') or item.get('slug', '')
+                slug = get_item_slug(item)
                 crafting_info = await scrape_item_crafting(slug) if slug else {}
                 embed = format_aoc_item_embed(item, crafting_info)
             else:
@@ -2532,7 +2545,7 @@ async def aoc(ctx, category: str = None, *, query: str = None):
 
                 if len(results) == 1:
                     item = results[0]
-                    slug = item.get('_slug') or item.get('slug', '')
+                    slug = get_item_slug(item)
                     crafting_info = await scrape_item_crafting(slug) if slug else {}
                     embed = format_aoc_item_embed(item, crafting_info)
                     await ctx.send(embed=embed)
