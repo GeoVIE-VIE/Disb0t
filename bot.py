@@ -1944,7 +1944,7 @@ async def scrape_item_crafting(item_slug: str, force_refresh: bool = False, save
         if cached:
             return cached
 
-    url = f"https://ashescodex.com/item/{item_slug}"
+    url = f"https://ashescodex.com/db/item/{item_slug}"
 
     try:
         response = await bot.loop.run_in_executor(None, _fetch_aoc_webpage, url)
@@ -2122,8 +2122,8 @@ async def refresh_aoc_cache(ctx=None) -> bool:
     return False
 
 
-async def bulk_scrape_crafting(ctx=None, limit: int = None) -> int:
-    """Bulk scrape crafting data for all items"""
+async def bulk_scrape_crafting(ctx=None, limit: int = None, parallel: int = 10) -> int:
+    """Bulk scrape crafting data for all items in parallel"""
     global _aoc_cache
 
     items = get_aoc_items()
@@ -2149,31 +2149,39 @@ async def bulk_scrape_crafting(ctx=None, limit: int = None) -> int:
         return 0
 
     if ctx:
-        await ctx.send(f"Scraping crafting data for {len(items_to_scrape)} items... This may take a while.")
+        await ctx.send(f"Scraping crafting data for {len(items_to_scrape)} items with {parallel} parallel requests...")
 
+    # Semaphore to limit concurrent requests
+    semaphore = asyncio.Semaphore(parallel)
     scraped_count = 0
     errors = 0
-    for i, (slug, name) in enumerate(items_to_scrape):
-        try:
-            # Don't save to file each time - we'll batch save
-            crafting_info = await scrape_item_crafting(slug, force_refresh=True, save_to_file=False)
-            if crafting_info:
-                scraped_count += 1
+    processed = 0
 
-            # Progress update and save every 50 items
-            if (i + 1) % 50 == 0:
-                save_aoc_cache()  # Batch save every 50
-                if ctx:
-                    await ctx.send(f"Progress: {i + 1}/{len(items_to_scrape)} items scraped ({scraped_count} with recipes)")
+    async def scrape_one(slug: str, name: str):
+        nonlocal scraped_count, errors
+        async with semaphore:
+            try:
+                crafting_info = await scrape_item_crafting(slug, force_refresh=True, save_to_file=False)
+                if crafting_info:
+                    scraped_count += 1
+            except Exception as e:
+                errors += 1
+                print(f"Error scraping {slug}: {e}")
 
-            # Small delay to avoid hammering the server
-            await asyncio.sleep(0.5)
-        except Exception as e:
-            errors += 1
-            print(f"Error scraping {slug}: {e}")
+    # Process in batches for progress updates
+    batch_size = 50
+    for batch_start in range(0, len(items_to_scrape), batch_size):
+        batch = items_to_scrape[batch_start:batch_start + batch_size]
 
-    # Final save
-    save_aoc_cache()
+        # Run batch in parallel
+        tasks = [scrape_one(slug, name) for slug, name in batch]
+        await asyncio.gather(*tasks)
+
+        processed += len(batch)
+        save_aoc_cache()  # Save after each batch
+
+        if ctx:
+            await ctx.send(f"Progress: {processed}/{len(items_to_scrape)} items ({scraped_count} with recipes, {errors} errors)")
 
     if ctx:
         await ctx.send(f"Done! Scraped {scraped_count} recipes from {len(items_to_scrape)} items. ({errors} errors)")
@@ -2211,16 +2219,12 @@ def get_item_name(item: dict) -> str:
 
 
 def get_item_slug(item: dict) -> str:
-    """Generate a URL slug from item name (ashescodex uses name-based slugs)"""
-    name = get_item_name(item)
-    if not name or name == 'Unknown':
+    """Get the internal name used in ashescodex URLs"""
+    if not isinstance(item, dict):
         return ''
-    # Convert to lowercase, replace spaces with hyphens, remove special chars
-    slug = name.lower().strip()
-    slug = re.sub(r'[^a-z0-9\s-]', '', slug)  # Remove special chars
-    slug = re.sub(r'\s+', '-', slug)  # Replace spaces with hyphens
-    slug = re.sub(r'-+', '-', slug)  # Remove duplicate hyphens
-    return slug.strip('-')
+    # The 'name' field contains the internal identifier used in URLs
+    # e.g., "Gear_Armor_Heavy_2ndSwordDivision_Waist"
+    return item.get('name', '')
 
 
 def search_aoc_items(items: list, query: str, limit: int = 5) -> list:
@@ -2357,7 +2361,7 @@ def format_aoc_item_embed(item: dict, crafting_info: dict = None) -> discord.Emb
     # Link to website
     slug = get_item_slug(item)
     if slug:
-        embed.url = f"https://ashescodex.com/item/{slug}"
+        embed.url = f"https://ashescodex.com/db/item/{slug}"
 
     embed.set_footer(text="Ashes of Creation | ashescodex.com")
 
@@ -2636,10 +2640,10 @@ async def aoc_refresh_cmd(ctx):
 
 @bot.command(name='aoc_scrape', aliases=['aoc_recipes'])
 @commands.is_owner()
-async def aoc_scrape_cmd(ctx, limit: int = None):
+async def aoc_scrape_cmd(ctx, limit: int = None, parallel: int = 10):
     """Bulk scrape crafting recipes from website (owner only).
-    Usage: !aoc_scrape [limit] - Scrape crafting data for all/limited items."""
-    await bulk_scrape_crafting(ctx, limit)
+    Usage: !aoc_scrape [limit] [parallel] - e.g., !aoc_scrape 100 20"""
+    await bulk_scrape_crafting(ctx, limit, parallel)
 
 
 @bot.command(name='aoc_status')
