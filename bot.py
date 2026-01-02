@@ -1868,7 +1868,8 @@ async def fetch_aoc_data(endpoint: str) -> list:
 
     all_data = []
     page = 1
-    max_pages = 50  # Safety limit
+    max_pages = 200  # Safety limit
+    total_pages = None
 
     while page <= max_pages:
         url = f"https://api.ashescodex.com/{endpoint}?page={page}"
@@ -1885,41 +1886,36 @@ async def fetch_aoc_data(endpoint: str) -> list:
                 print(f"AOC API returned status {response.status_code} for {endpoint}")
                 break
 
-            data = response.json()
+            response_data = response.json()
 
-            # Debug: log the structure we're getting
-            print(f"AOC API {endpoint} page {page}: type={type(data).__name__}")
-            if isinstance(data, dict):
-                print(f"  Keys: {list(data.keys())[:5]}")
-                # Handle nested data structure - API returns {"data": [...]}
-                if 'data' in data:
-                    data = data['data']
-                    print(f"  Extracted 'data' key: type={type(data).__name__}, len={len(data) if isinstance(data, list) else 'N/A'}")
+            # Check for meta pagination info
+            if isinstance(response_data, dict):
+                meta = response_data.get('meta', {})
+                if meta and total_pages is None:
+                    total_pages = meta.get('totalPages') or meta.get('last_page') or meta.get('pages')
+                    print(f"AOC API {endpoint}: total_pages from meta = {total_pages}")
 
-            if isinstance(data, list) and len(data) > 0:
-                first_item = data[0]
-                print(f"  First item type: {type(first_item).__name__}")
-                if isinstance(first_item, dict):
-                    print(f"  First item keys: {list(first_item.keys())[:5]}")
+                # Extract the data array
+                data = response_data.get('data', [])
+            else:
+                data = response_data
 
-            if not data or len(data) == 0:
-                break
+            print(f"AOC API {endpoint} page {page}/{total_pages or '?'}: got {len(data) if isinstance(data, list) else 0} items")
 
-            # Ensure we have a list of dicts
-            if not isinstance(data, list):
-                print(f"  Warning: data is not a list, skipping")
+            if not data or not isinstance(data, list) or len(data) == 0:
+                print(f"  No more data, stopping")
                 break
 
             # Filter to only include dict items
             valid_items = [item for item in data if isinstance(item, dict)]
-            print(f"  Valid dict items: {len(valid_items)} out of {len(data)}")
-
             all_data.extend(valid_items)
-            page += 1
 
-            # If we got less than expected page size, we're done
-            if len(data) < 100:
+            # Check if we've fetched all pages
+            if total_pages and page >= total_pages:
+                print(f"  Reached last page ({total_pages})")
                 break
+
+            page += 1
 
         except Exception as e:
             print(f"Error fetching AOC {endpoint} page {page}: {e}")
