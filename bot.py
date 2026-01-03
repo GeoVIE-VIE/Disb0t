@@ -2496,10 +2496,12 @@ def format_aoc_mob_embed(mob: dict) -> discord.Embed:
 class AocSearchView(discord.ui.View):
     """View with buttons to select from multiple search results"""
 
-    def __init__(self, results: list, result_type: str):
+    def __init__(self, results: list, result_type: str, target_channel=None, requester=None):
         super().__init__(timeout=120)
         self.results = results
         self.result_type = result_type
+        self.target_channel = target_channel
+        self.requester = requester
 
         # Add a button for each result (max 5)
         for i, item in enumerate(results[:5]):
@@ -2532,10 +2534,28 @@ class AocSearchView(discord.ui.View):
             else:
                 embed = format_aoc_mob_embed(item)
 
-            await interaction.followup.send(embed=embed)
+            # Post to target channel with requester mention
+            channel = self.target_channel or interaction.channel
+            requester_text = f"*Requested by {self.requester.mention}*" if self.requester else ""
+            await channel.send(requester_text, embed=embed)
             self.stop()
 
         return callback
+
+
+# Channel name where AOC responses should be posted
+AOC_CHANNEL_NAME = "ashesofcreation"
+
+
+def get_aoc_channel(guild):
+    """Find the AshesOfCreation channel in the guild"""
+    if not guild:
+        return None
+    # Try exact match first, then case-insensitive
+    for channel in guild.text_channels:
+        if channel.name.lower().replace('-', '').replace('_', '') == AOC_CHANNEL_NAME.lower().replace('-', '').replace('_', ''):
+            return channel
+    return None
 
 
 @bot.command(name='aoc')
@@ -2546,6 +2566,9 @@ async def aoc(ctx, category: str = None, *, query: str = None):
     !aoc item sword
     !aoc mob wolf
     """
+    # Get the AOC channel to post results (falls back to current channel)
+    aoc_channel = get_aoc_channel(ctx.guild) or ctx.channel
+
     if not category:
         embed = discord.Embed(
             title="⚔️ Ashes of Creation Lookup",
@@ -2603,7 +2626,9 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                     slug = get_item_slug(item)
                     crafting_info = await scrape_item_crafting(slug) if slug else {}
                     embed = format_aoc_item_embed(item, crafting_info)
-                    await ctx.send(embed=embed)
+                    await aoc_channel.send(f"*Requested by {ctx.author.mention}*", embed=embed)
+                    if aoc_channel != ctx.channel:
+                        await ctx.send(f"Posted in {aoc_channel.mention}")
                 else:
                     # Multiple results - show selection
                     embed = discord.Embed(
@@ -2631,8 +2656,10 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                             print(f"Error processing item {i}: {item_err}, item type: {type(item)}")
                             embed.add_field(name=f"{i+1}. Item", value="Error loading", inline=False)
 
-                    view = AocSearchView(results, 'item')
-                    await ctx.send(embed=embed, view=view)
+                    view = AocSearchView(results, 'item', aoc_channel, ctx.author)
+                    await aoc_channel.send(f"*Requested by {ctx.author.mention}*", embed=embed, view=view)
+                    if aoc_channel != ctx.channel:
+                        await ctx.send(f"Posted in {aoc_channel.mention}")
 
             elif category in ['mob', 'mobs', 'creature']:
                 mobs = get_aoc_mobs()
@@ -2650,7 +2677,9 @@ async def aoc(ctx, category: str = None, *, query: str = None):
 
                 if len(results) == 1:
                     embed = format_aoc_mob_embed(results[0])
-                    await ctx.send(embed=embed)
+                    await aoc_channel.send(f"*Requested by {ctx.author.mention}*", embed=embed)
+                    if aoc_channel != ctx.channel:
+                        await ctx.send(f"Posted in {aoc_channel.mention}")
                 else:
                     embed = discord.Embed(
                         title=f"🔍 Found {len(results)} mobs matching '{query}'",
@@ -2660,7 +2689,7 @@ async def aoc(ctx, category: str = None, *, query: str = None):
 
                     for i, mob in enumerate(results[:5]):
                         name = get_mob_name(mob)
-                        level = mob.get('level') or mob.get('minLevel') or '?'
+                        level = mob.get('_levelRange') or mob.get('level') or '?'
                         mob_type = mob.get('type') or mob.get('category') or 'Creature'
                         if isinstance(mob_type, str):
                             mob_type = mob_type.split('.')[-1].replace('_', ' ').title()
@@ -2670,8 +2699,10 @@ async def aoc(ctx, category: str = None, *, query: str = None):
                             inline=False
                         )
 
-                    view = AocSearchView(results, 'mob')
-                    await ctx.send(embed=embed, view=view)
+                    view = AocSearchView(results, 'mob', aoc_channel, ctx.author)
+                    await aoc_channel.send(f"*Requested by {ctx.author.mention}*", embed=embed, view=view)
+                    if aoc_channel != ctx.channel:
+                        await ctx.send(f"Posted in {aoc_channel.mention}")
 
         except Exception as e:
             import traceback
