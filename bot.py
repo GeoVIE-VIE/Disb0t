@@ -2422,7 +2422,7 @@ def get_mob_name(mob: dict) -> str:
     """Get mob name from various possible field names"""
     if not isinstance(mob, dict):
         return str(mob)
-    return mob.get('name') or mob.get('mobName') or mob.get('displayName', 'Unknown Creature')
+    return mob.get('_displayName') or mob.get('name') or mob.get('mobName') or mob.get('displayName', 'Unknown Creature')
 
 
 def format_aoc_mob_embed(mob: dict) -> discord.Embed:
@@ -2447,14 +2447,10 @@ def format_aoc_mob_embed(mob: dict) -> discord.Embed:
         color=discord.Color.red()
     )
 
-    # Level
-    level = mob.get('level') or mob.get('levelRange') or mob.get('minLevel')
-    if level:
-        max_level = mob.get('maxLevel')
-        if max_level and max_level != level:
-            embed.add_field(name="Level", value=f"{level}-{max_level}", inline=True)
-        else:
-            embed.add_field(name="Level", value=str(level), inline=True)
+    # Level - API uses _levelRange field
+    level_range = mob.get('_levelRange') or mob.get('level') or mob.get('levelRange')
+    if level_range:
+        embed.add_field(name="Level", value=str(level_range), inline=True)
 
     # Mob type
     mob_type = mob.get('type') or mob.get('creatureType') or mob.get('category')
@@ -2475,17 +2471,22 @@ def format_aoc_mob_embed(mob: dict) -> discord.Embed:
         except (ValueError, TypeError):
             embed.add_field(name="Health", value=str(health), inline=True)
 
-    # Drops
-    drops = mob.get('drops', []) or mob.get('_drops', []) or mob.get('loot', [])
+    # Drops from _loot field
+    drops = mob.get('_loot', []) or mob.get('drops', []) or mob.get('loot', [])
     if drops and isinstance(drops, list):
         drop_names = []
         for d in drops[:5]:
             if isinstance(d, dict):
-                drop_names.append(d.get('itemName') or d.get('name') or str(d))
+                drop_names.append(d.get('itemName') or d.get('_displayName') or d.get('name') or str(d))
             else:
                 drop_names.append(str(d))
         if drop_names:
             embed.add_field(name="Drops", value=", ".join(drop_names), inline=False)
+
+    # Link to website using _slug
+    slug = mob.get('_slug', '')
+    if slug:
+        embed.url = f"https://ashescodex.com/db/mob/{slug}"
 
     embed.set_footer(text="Ashes of Creation | ashescodex.com")
 
