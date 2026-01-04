@@ -2277,6 +2277,7 @@ def get_item_slug(item: dict) -> str:
 def search_aoc_items(items: list, query: str, limit: int = 5) -> list:
     """Search items by name, return top matches"""
     query_lower = query.lower()
+    query_words = query_lower.split()
 
     # Filter to only dict items
     valid_items = [i for i in items if isinstance(i, dict)]
@@ -2291,9 +2292,26 @@ def search_aoc_items(items: list, query: str, limit: int = 5) -> list:
     if starts_with:
         return starts_with[:limit]
 
-    # Contains query
-    contains = [i for i in valid_items if query_lower in get_item_name(i).lower()]
-    return contains[:limit]
+    # Contains exact phrase
+    contains_phrase = [i for i in valid_items if query_lower in get_item_name(i).lower()]
+    if contains_phrase:
+        return contains_phrase[:limit]
+
+    # Contains ALL words (in any order) - for multi-word searches like "sunfire shield"
+    if len(query_words) > 1:
+        contains_all_words = [
+            i for i in valid_items
+            if all(word in get_item_name(i).lower() for word in query_words)
+        ]
+        if contains_all_words:
+            return contains_all_words[:limit]
+
+    # Contains ANY word - fallback for partial matches
+    contains_any = [
+        i for i in valid_items
+        if any(word in get_item_name(i).lower() for word in query_words)
+    ]
+    return contains_any[:limit]
 
 
 def format_aoc_item_embed(item: dict, crafting_info: dict = None) -> discord.Embed:
