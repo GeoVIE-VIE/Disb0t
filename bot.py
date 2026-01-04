@@ -2076,7 +2076,7 @@ async def fetch_aoc_data(endpoint: str) -> list:
 
     all_data = []
     page = 1
-    max_pages = 200  # Safety limit
+    max_pages = 500  # Safety limit (allows ~15,000 items at 30/page)
     total_pages = None
 
     while page <= max_pages:
