@@ -8,11 +8,16 @@ import random
 import re
 import os
 import io
+import logging
 import urllib.parse
 from pathlib import Path
 from dotenv import load_dotenv
 from collections import deque
 from datetime import datetime, timedelta
+
+# Set up logging for music playback debugging
+logger = logging.getLogger('disb0t.music')
+logger.setLevel(logging.INFO)
 
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
@@ -49,7 +54,7 @@ YTDL_OPTIONS = {
 }
 
 FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_on_network_error 1 -reconnect_on_http_error 4xx,5xx',
     'options': '-vn',
 }
 
@@ -106,7 +111,9 @@ def get_player(guild_id):
     return players[guild_id]
 
 
-async def play_next(ctx):
+async def play_next(ctx, retry_count=0):
+    """Play the next song in queue with retry logic for expired URLs"""
+    MAX_RETRIES = 2
     player = get_player(ctx.guild.id)
 
     if player.loop and player.current:
@@ -121,14 +128,34 @@ async def play_next(ctx):
 
             def after_playing(error):
                 if error:
-                    print(f'Player error: {error}')
+                    error_str = str(error).lower()
+                    # Check for 403/URL expiration errors - retry with fresh URL
+                    if '403' in error_str or 'forbidden' in error_str or 'server returned' in error_str:
+                        logger.warning(f'URL expired or 403 error for "{next_song["title"]}", retrying: {error}')
+                        if retry_count < MAX_RETRIES:
+                            # Re-queue the song and retry with fresh URL extraction
+                            player.queue.appendleft(next_song)
+                            asyncio.run_coroutine_threadsafe(play_next(ctx, retry_count + 1), bot.loop)
+                            return
+                    logger.error(f'Player error: {error}')
                 asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
 
             ctx.voice_client.play(source, after=after_playing)
-            await ctx.send(f"Now playing: **{source.title}**")
+            if retry_count > 0:
+                await ctx.send(f"Now playing (after retry): **{source.title}**")
+            else:
+                await ctx.send(f"Now playing: **{source.title}**")
         except Exception as e:
-            await ctx.send(f"Error playing song: {e}")
-            asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+            error_str = str(e).lower()
+            # Check for extraction errors related to 403/expiration
+            if ('403' in error_str or 'forbidden' in error_str) and retry_count < MAX_RETRIES:
+                await ctx.send(f"URL expired, retrying... (attempt {retry_count + 2})")
+                await asyncio.sleep(1)  # Brief delay before retry
+                player.queue.appendleft(next_song)
+                await play_next(ctx, retry_count + 1)
+            else:
+                await ctx.send(f"Error playing song: {e}")
+                asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
     else:
         player.current = None
 
@@ -161,6 +188,7 @@ def generate_command_table() -> discord.Embed:
 `!volume <0-100>` - Set volume
 `!clear` - Clear queue
 `!leave` / `!dc` - Disconnect
+`!ytdlp_version` - Check yt-dlp version
 """
     embed.add_field(name="🎵 Music", value=music_cmds.strip(), inline=False)
 
@@ -431,6 +459,15 @@ async def clear(ctx):
     player = get_player(ctx.guild.id)
     player.clear_queue()
     await ctx.send("Queue cleared!")
+
+
+@bot.command(name='ytdlp_version', aliases=['ytdl_version'])
+async def ytdlp_version(ctx):
+    """Show yt-dlp version (for debugging playback issues)"""
+    version = yt_dlp.version.__version__
+    await ctx.send(f"yt-dlp version: **{version}**\n"
+                   f"If you're having playback issues (403 errors), try updating:\n"
+                   f"`pip install -U yt-dlp`")
 
 
 # ============== 4chan YLYL Feature ==============
