@@ -2733,16 +2733,7 @@ async def aoc_recipe(ctx, *, query: str = None):
 
 
 def get_item_ingredients(item: dict) -> list:
-    """Extract ingredients from an item's recipe data.
-    First checks extracted game file recipes, then falls back to API data.
-    """
-    # First try to get from extracted game files
-    item_name = get_item_name(item)
-    extracted_recipe = get_aoc_recipe_data(item_name)
-    if extracted_recipe and extracted_recipe.get('ingredients'):
-        return extracted_recipe['ingredients']
-
-    # Fall back to API data
+    """Extract ingredients from an item's recipe data (ashescodex API fallback)."""
     ingredients = item.get('ingredients') or item.get('materials') or item.get('_ingredients', [])
     if not ingredients or not isinstance(ingredients, list):
         return []
@@ -2759,116 +2750,180 @@ def get_item_ingredients(item: dict) -> list:
     return result
 
 
-def find_item_by_name(items: list, name: str) -> dict:
-    """Find an item by exact name (case-insensitive)"""
-    name_lower = name.lower().strip()
-    for item in items:
-        if isinstance(item, dict):
-            item_name = get_item_name(item).lower()
-            if item_name == name_lower:
-                return item
-    return None
+# ============== AOC Armory Crafting Calculator ==============
+
+AOCARMORY_API = "https://aocarmory.com/api"
 
 
-def calculate_crafting_materials(item_name: str, quantity: int, items: list,
-                                  visited: set = None, depth: int = 0) -> dict:
+async def search_aocarmory_items(query: str) -> list:
+    """Search for items via the aocarmory.com API. Returns items with full recipe trees."""
+    url = f"{AOCARMORY_API}/items/search?q={urllib.parse.quote(query)}"
+    headers = {'User-Agent': 'Mozilla/5.0 (DisBot Discord Bot)'}
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    return await resp.json(content_type=None)
+        except Exception as e:
+            logger.error(f"AOC Armory API error: {e}")
+    return []
+
+
+def format_copper_cost(copper: int) -> str:
+    """Format copper amount into gold/silver/copper string"""
+    if not copper or copper <= 0:
+        return "Free"
+    gold = copper // 10000
+    silver = (copper % 10000) // 100
+    cop = copper % 100
+    parts = []
+    if gold > 0:
+        parts.append(f"{gold}g")
+    if silver > 0:
+        parts.append(f"{silver}s")
+    if cop > 0:
+        parts.append(f"{cop}c")
+    return " ".join(parts)
+
+
+def collect_raw_materials(recipe_tree: dict, quantity: int = 1) -> dict:
     """
-    Recursively calculate all materials needed to craft an item.
-    Returns dict with 'materials' (raw materials) and 'intermediate' (craftable components).
+    Walk the recipeTree from aocarmory and collect all raw materials.
+    Returns dict with 'raw' (leaf-level materials) and 'intermediate' (craftable components).
     """
-    if visited is None:
-        visited = set()
+    raw = {}
+    intermediate = {}
 
-    # Prevent infinite recursion
-    if depth > 10 or item_name.lower() in visited:
-        return {'materials': {item_name: quantity}, 'intermediate': {}}
+    if not recipe_tree or 'recipes' not in recipe_tree:
+        return {'raw': raw, 'intermediate': intermediate}
 
-    visited.add(item_name.lower())
+    def walk_resources(resources: list, multiplier: int):
+        for res in resources:
+            item = res.get('item', {})
+            item_name = item.get('itemName', 'Unknown')
+            qty = res.get('quantity', 1) * multiplier
+            sub = res.get('subMaterials', {})
 
-    # Find the item
-    item = find_item_by_name(items, item_name)
-    if not item:
-        # Item not found - treat as raw material
-        return {'materials': {item_name: quantity}, 'intermediate': {}}
+            if sub and sub.get('recipes'):
+                # This ingredient is craftable - add to intermediate
+                intermediate[item_name] = intermediate.get(item_name, 0) + qty
+                # Recurse into sub-recipes
+                for sub_recipe in sub['recipes']:
+                    out_qty = sub_recipe.get('outputQuantity', 1) or 1
+                    sub_mult = qty  # Each unit needs these sub-materials
+                    walk_resources(sub_recipe.get('generalResources', []), sub_mult)
+                    walk_resources(sub_recipe.get('primaryResources', []), sub_mult)
+            else:
+                # Raw material (no sub-recipes)
+                raw[item_name] = raw.get(item_name, 0) + qty
 
-    # Get ingredients
-    ingredients = get_item_ingredients(item)
-    if not ingredients:
-        # No recipe - treat as raw material
-        return {'materials': {item_name: quantity}, 'intermediate': {}}
+    for recipe in recipe_tree['recipes']:
+        out_qty = recipe.get('outputQuantity', 1) or 1
+        crafts_needed = quantity  # Each craft produces out_qty items
+        walk_resources(recipe.get('generalResources', []), crafts_needed)
+        walk_resources(recipe.get('primaryResources', []), crafts_needed)
 
-    # This item is craftable - add to intermediate
-    result = {'materials': {}, 'intermediate': {item_name: quantity}}
+    return {'raw': raw, 'intermediate': intermediate}
 
-    for ing in ingredients:
-        ing_name = ing['name']
-        ing_qty = ing['quantity'] * quantity
 
-        # Recursively calculate sub-materials
-        sub_result = calculate_crafting_materials(
-            ing_name, ing_qty, items, visited.copy(), depth + 1
-        )
+def get_direct_ingredients(recipe_tree: dict) -> list:
+    """Get the top-level ingredients from a recipe tree"""
+    if not recipe_tree or 'recipes' not in recipe_tree:
+        return []
 
-        # Merge materials
-        for mat, qty in sub_result['materials'].items():
-            result['materials'][mat] = result['materials'].get(mat, 0) + qty
-
-        # Merge intermediate items
-        for mat, qty in sub_result['intermediate'].items():
-            result['intermediate'][mat] = result['intermediate'].get(mat, 0) + qty
-
+    result = []
+    for recipe in recipe_tree['recipes']:
+        for res in recipe.get('generalResources', []):
+            item = res.get('item', {})
+            result.append({
+                'name': item.get('itemName', 'Unknown'),
+                'quantity': res.get('quantity', 1)
+            })
+        for res in recipe.get('primaryResources', []):
+            item = res.get('item', {})
+            result.append({
+                'name': item.get('itemName', 'Unknown'),
+                'quantity': res.get('quantity', 1)
+            })
     return result
 
 
-def format_crafting_embed(item_name: str, quantity: int, materials: dict,
-                          intermediate: dict, recipe_item: dict = None) -> discord.Embed:
-    """Format crafting calculation results into a Discord embed"""
+def format_armory_crafting_embed(item: dict, quantity: int) -> discord.Embed:
+    """Format crafting calculation from aocarmory data into a Discord embed"""
+    name = item.get('name', 'Unknown')
+    recipe_tree = item.get('recipeTree', {})
+
     embed = discord.Embed(
-        title=f"🔨 Crafting Calculator: {item_name}",
-        description=f"Materials needed to craft **{quantity}x {item_name}**",
+        title=f"🔨 {name}" + (f" x{quantity}" if quantity > 1 else ""),
+        description=item.get('typeDescription', ''),
         color=discord.Color.orange()
     )
 
-    # Add profession info if available
-    if recipe_item:
-        profession = recipe_item.get('profession') or recipe_item.get('professionTag') or recipe_item.get('_profession')
-        if profession:
-            if isinstance(profession, dict):
-                prof_name = profession.get('name') or profession.get('_displayName', '')
-            else:
-                prof_name = str(profession).split('.')[-1].replace('_', ' ').title()
-            if prof_name:
-                embed.add_field(name="Profession", value=prof_name, inline=True)
+    # Item info
+    if item.get('level'):
+        embed.add_field(name="Level", value=str(item['level']), inline=True)
+    if item.get('rarityMin'):
+        embed.add_field(name="Rarity", value=f"{item['rarityMin']} - {item.get('rarityMax', '')}", inline=True)
 
-    # Raw materials section
-    if materials:
-        # Sort by quantity (highest first)
-        sorted_mats = sorted(materials.items(), key=lambda x: x[1], reverse=True)
-        mat_lines = [f"• **{name}** x{qty}" for name, qty in sorted_mats[:15]]
-        if len(sorted_mats) > 15:
-            mat_lines.append(f"... and {len(sorted_mats) - 15} more")
+    # Direct ingredients
+    direct = get_direct_ingredients(recipe_tree)
+    if direct:
+        ing_lines = [f"• **{ing['name']}** x{ing['quantity'] * quantity}" for ing in direct]
         embed.add_field(
-            name=f"📦 Raw Materials ({len(materials)} types)",
-            value="\n".join(mat_lines) if mat_lines else "None",
+            name="📋 Ingredients",
+            value="\n".join(ing_lines[:10]),
             inline=False
         )
 
-    # Intermediate crafted items section (excluding the main item)
-    intermediate_items = {k: v for k, v in intermediate.items() if k.lower() != item_name.lower()}
-    if intermediate_items:
-        sorted_inter = sorted(intermediate_items.items(), key=lambda x: x[1], reverse=True)
-        inter_lines = [f"• {name} x{qty}" for name, qty in sorted_inter[:10]]
+    # Calculate full material breakdown
+    calc = collect_raw_materials(recipe_tree, quantity)
+    raw = calc['raw']
+    intermediate = calc['intermediate']
+
+    # Raw materials
+    if raw:
+        sorted_raw = sorted(raw.items(), key=lambda x: x[1], reverse=True)
+        raw_lines = [f"• **{mat}** x{qty}" for mat, qty in sorted_raw[:15]]
+        if len(sorted_raw) > 15:
+            raw_lines.append(f"... and {len(sorted_raw) - 15} more")
+        embed.add_field(
+            name=f"📦 Raw Materials ({len(raw)} types)",
+            value="\n".join(raw_lines),
+            inline=False
+        )
+
+    # Intermediate
+    intermediate_filtered = {k: v for k, v in intermediate.items() if k.lower() != name.lower()}
+    if intermediate_filtered:
+        sorted_inter = sorted(intermediate_filtered.items(), key=lambda x: x[1], reverse=True)
+        inter_lines = [f"• {mat} x{qty}" for mat, qty in sorted_inter[:10]]
         if len(sorted_inter) > 10:
             inter_lines.append(f"... and {len(sorted_inter) - 10} more")
         embed.add_field(
-            name=f"⚙️ Intermediate Components ({len(intermediate_items)} types)",
+            name=f"⚙️ Intermediate ({len(intermediate_filtered)} types)",
             value="\n".join(inter_lines),
             inline=False
         )
 
-    # Total item count
-    total_raw = sum(materials.values()) if materials else 0
-    embed.set_footer(text=f"Total raw materials: {total_raw} items | Ashes of Creation")
+    # Cost info
+    if recipe_tree.get('recipes'):
+        recipe = recipe_tree['recipes'][0]
+        craft_cost = recipe.get('craftCost', 0)
+        craft_fee = recipe.get('craftFee', 0)
+        if craft_cost or craft_fee:
+            total = (craft_cost + craft_fee) * quantity
+            cost_text = f"Reagent: {format_copper_cost(craft_cost * quantity)}"
+            cost_text += f"\nFee: {format_copper_cost(craft_fee * quantity)}"
+            cost_text += f"\n**Total: {format_copper_cost(total)}**"
+            embed.add_field(name="💰 Cost", value=cost_text, inline=True)
+
+    # Icon
+    icon = item.get('icon', '')
+    if icon and icon.startswith('http'):
+        embed.set_thumbnail(url=icon)
+
+    total_raw = sum(raw.values()) if raw else 0
+    embed.set_footer(text=f"Total raw materials: {total_raw} items | Data from aocarmory.com")
 
     return embed
 
@@ -2879,9 +2934,9 @@ async def craft_calculator(ctx, *, args: str = None):
     Crafting calculator - calculate materials needed to craft items.
     Usage: !craft <item name> [quantity]
     Examples:
-      !craft Iron Ingot
-      !craft Iron Ingot 10
-      !craft Apprentice Sword 5
+      !craft Rosarium Guard Cuirass
+      !craft Zinc Armor Plating 10
+      !craft Nightreaver Greatsword 5
     """
     if not args:
         embed = discord.Embed(
@@ -2896,10 +2951,10 @@ async def craft_calculator(ctx, *, args: str = None):
         )
         embed.add_field(
             name="Examples",
-            value="`!craft Iron Ingot`\n`!craft Iron Ingot 10`\n`!craft Apprentice Sword 5`",
+            value="`!craft Rosarium Guard Cuirass`\n`!craft Zinc Armor Plating 10`\n`!craft Nightreaver Greatsword 5`",
             inline=False
         )
-        embed.set_footer(text="Data from ashescodex.com")
+        embed.set_footer(text="Data from aocarmory.com")
         return await ctx.send(embed=embed)
 
     # Parse quantity from end of args
@@ -2913,70 +2968,51 @@ async def craft_calculator(ctx, *, args: str = None):
         quantity = max(1, min(quantity, 1000))  # Limit 1-1000
 
     async with ctx.typing():
-        items = get_aoc_items()
-        if not items:
-            return await ctx.send("⚠️ AOC data not loaded. Try `!aoc_refresh` first.")
-
-        # Search for the item
-        results = search_aoc_items(items, item_query, limit=5)
+        results = await search_aocarmory_items(item_query)
 
         if not results:
             return await ctx.send(f"❌ No items found matching **{item_query}**")
 
-        # Check if any result has ingredients
-        craftable_results = [r for r in results if get_item_ingredients(r)]
+        # Filter to items that have recipe trees
+        craftable = [r for r in results if r.get('recipeTree', {}).get('recipes')]
 
-        if len(results) == 1 or (craftable_results and len(craftable_results) == 1):
-            # Use the single result or the only craftable one
-            item = craftable_results[0] if craftable_results else results[0]
-            item_name = get_item_name(item)
-            ingredients = get_item_ingredients(item)
-
-            if not ingredients:
-                return await ctx.send(f"⚠️ **{item_name}** has no crafting recipe (might be a drop or raw material).")
-
-            # Calculate materials
-            calc_result = calculate_crafting_materials(item_name, quantity, items)
-            embed = format_crafting_embed(
-                item_name, quantity,
-                calc_result['materials'],
-                calc_result['intermediate'],
-                item
-            )
+        if len(craftable) == 1:
+            embed = format_armory_crafting_embed(craftable[0], quantity)
             await ctx.send(embed=embed)
-
-        elif len(results) > 1:
-            # Multiple results - show selection
+        elif len(craftable) == 0 and len(results) > 0:
+            # Items found but none are craftable
+            names = ", ".join(r.get('name', '?') for r in results[:5])
+            await ctx.send(f"⚠️ Found items ({names}) but none have crafting recipes.")
+        elif len(craftable) > 1:
+            # Multiple craftable results - show selection
             embed = discord.Embed(
-                title=f"🔍 Found {len(results)} items matching '{item_query}'",
+                title=f"🔍 Found {len(craftable)} craftable items matching '{item_query}'",
                 description="Select an item to calculate crafting materials:",
                 color=discord.Color.orange()
             )
-
-            for i, item in enumerate(results[:5]):
-                name = get_item_name(item)
-                has_recipe = "✅" if get_item_ingredients(item) else "❌"
+            for i, item in enumerate(craftable[:5]):
+                level = item.get('level', '?')
+                rarity = item.get('rarityMin', '?')
                 embed.add_field(
-                    name=f"{i+1}. {name}",
-                    value=f"Has recipe: {has_recipe}",
+                    name=f"{i+1}. {item.get('name', '?')}",
+                    value=f"Lv{level} {rarity} {item.get('typeDescription', '')}",
                     inline=False
                 )
 
-            view = CraftingSelectView(results[:5], quantity, items)
+            view = CraftingSelectView(craftable[:5], quantity)
             await ctx.send(embed=embed, view=view)
 
 
 class CraftingSelectView(discord.ui.View):
     """View with buttons to select item for crafting calculation"""
 
-    def __init__(self, results: list, quantity: int, items: list):
+    def __init__(self, results: list, quantity: int):
         super().__init__(timeout=120)
         self.results = results
         self.quantity = quantity
-        self.items = items
 
         for i, item in enumerate(results[:5]):
-            name = get_item_name(item)
+            name = item.get('name', '?')
             if len(name) > 40:
                 name = name[:37] + "..."
 
@@ -2994,23 +3030,7 @@ class CraftingSelectView(discord.ui.View):
             await interaction.response.defer()
 
             item = self.results[index]
-            item_name = get_item_name(item)
-            ingredients = get_item_ingredients(item)
-
-            if not ingredients:
-                await interaction.followup.send(
-                    f"⚠️ **{item_name}** has no crafting recipe (might be a drop or raw material)."
-                )
-                self.stop()
-                return
-
-            calc_result = calculate_crafting_materials(item_name, self.quantity, self.items)
-            embed = format_crafting_embed(
-                item_name, self.quantity,
-                calc_result['materials'],
-                calc_result['intermediate'],
-                item
-            )
+            embed = format_armory_crafting_embed(item, self.quantity)
             await interaction.followup.send(embed=embed)
             self.stop()
 
